@@ -14,9 +14,16 @@ vi.mock("../lib/prisma", () => ({
   },
 }));
 
+const TENANT_ID = "GCREATOR1";
+
 const app = express();
 app.use(express.json());
 app.use("/api/tokens", tokenRoutes);
+
+/** Helper: attach the required tenant header to every request */
+function withTenant(r: request.Test): request.Test {
+  return r.set("X-Tenant-ID", TENANT_ID);
+}
 
 describe("GET /api/tokens/search", () => {
   beforeEach(() => {
@@ -27,7 +34,7 @@ describe("GET /api/tokens/search", () => {
     {
       id: "1",
       address: "GABC123",
-      creator: "GCREATOR1",
+      creator: TENANT_ID,
       name: "Test Token",
       symbol: "TEST",
       decimals: 18,
@@ -42,7 +49,7 @@ describe("GET /api/tokens/search", () => {
     {
       id: "2",
       address: "GDEF456",
-      creator: "GCREATOR2",
+      creator: TENANT_ID,
       name: "Another Token",
       symbol: "ANOT",
       decimals: 18,
@@ -56,11 +63,16 @@ describe("GET /api/tokens/search", () => {
     },
   ];
 
+  it("should return 400 when tenant header is missing", async () => {
+    const response = await request(app).get("/api/tokens/search");
+    expect(response.status).toBe(400);
+  });
+
   it("should return all tokens with default pagination", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get("/api/tokens/search");
+    const response = await withTenant(request(app).get("/api/tokens/search"));
 
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
@@ -75,11 +87,28 @@ describe("GET /api/tokens/search", () => {
     });
   });
 
+  it("should always scope queries to the tenant (creator)", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    await withTenant(request(app).get("/api/tokens/search"));
+
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          creator: TENANT_ID,
+        }),
+      })
+    );
+  });
+
   it("should search by name (case insensitive)", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get("/api/tokens/search?q=test");
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?q=test")
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
@@ -88,6 +117,7 @@ describe("GET /api/tokens/search", () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           OR: [
             { name: { contains: "test", mode: "insensitive" } },
             { symbol: { contains: "test", mode: "insensitive" } },
@@ -97,31 +127,14 @@ describe("GET /api/tokens/search", () => {
     );
   });
 
-  it("should filter by creator address", async () => {
-    vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
-    vi.mocked(prisma.token.count).mockResolvedValue(1);
-
-    const response = await request(app).get(
-      "/api/tokens/search?creator=GCREATOR1"
-    );
-
-    expect(response.status).toBe(200);
-    expect(response.body.success).toBe(true);
-    expect(prisma.token.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          creator: "GCREATOR1",
-        }),
-      })
-    );
-  });
-
   it("should filter by date range", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get(
-      "/api/tokens/search?startDate=2024-01-01T00:00:00.000Z&endDate=2024-01-31T23:59:59.999Z"
+    const response = await withTenant(
+      request(app).get(
+        "/api/tokens/search?startDate=2024-01-01T00:00:00.000Z&endDate=2024-01-31T23:59:59.999Z"
+      )
     );
 
     expect(response.status).toBe(200);
@@ -129,6 +142,7 @@ describe("GET /api/tokens/search", () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           createdAt: {
             gte: new Date("2024-01-01T00:00:00.000Z"),
             lte: new Date("2024-01-31T23:59:59.999Z"),
@@ -142,8 +156,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[1]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get(
-      "/api/tokens/search?minSupply=100000&maxSupply=600000"
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?minSupply=100000&maxSupply=600000")
     );
 
     expect(response.status).toBe(200);
@@ -151,6 +165,7 @@ describe("GET /api/tokens/search", () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           totalSupply: {
             gte: BigInt(100000),
             lte: BigInt(600000),
@@ -164,13 +179,16 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get("/api/tokens/search?hasBurns=true");
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?hasBurns=true")
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           burnCount: { gt: 0 },
         }),
       })
@@ -181,8 +199,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[1]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get(
-      "/api/tokens/search?hasBurns=false"
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?hasBurns=false")
     );
 
     expect(response.status).toBe(200);
@@ -190,6 +208,7 @@ describe("GET /api/tokens/search", () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           burnCount: 0,
         }),
       })
@@ -200,7 +219,7 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get("/api/tokens/search");
+    await withTenant(request(app).get("/api/tokens/search"));
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -213,8 +232,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get(
-      "/api/tokens/search?sortBy=burned&sortOrder=asc"
+    await withTenant(
+      request(app).get("/api/tokens/search?sortBy=burned&sortOrder=asc")
     );
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
@@ -228,8 +247,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get(
-      "/api/tokens/search?sortBy=supply&sortOrder=desc"
+    await withTenant(
+      request(app).get("/api/tokens/search?sortBy=supply&sortOrder=desc")
     );
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
@@ -243,8 +262,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get(
-      "/api/tokens/search?sortBy=name&sortOrder=asc"
+    await withTenant(
+      request(app).get("/api/tokens/search?sortBy=name&sortOrder=asc")
     );
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
@@ -258,8 +277,8 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[1]]);
     vi.mocked(prisma.token.count).mockResolvedValue(50);
 
-    const response = await request(app).get(
-      "/api/tokens/search?page=2&limit=10"
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?page=2&limit=10")
     );
 
     expect(response.body.pagination).toEqual({
@@ -282,7 +301,7 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get("/api/tokens/search?limit=100");
+    await withTenant(request(app).get("/api/tokens/search?limit=100"));
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -295,7 +314,7 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get("/api/tokens/search");
+    const response = await withTenant(request(app).get("/api/tokens/search"));
 
     expect(typeof response.body.data[0].totalSupply).toBe("string");
     expect(typeof response.body.data[0].initialSupply).toBe("string");
@@ -304,8 +323,8 @@ describe("GET /api/tokens/search", () => {
   });
 
   it("should return validation error for invalid parameters", async () => {
-    const response = await request(app).get(
-      "/api/tokens/search?sortBy=invalid"
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?sortBy=invalid")
     );
 
     expect(response.status).toBe(400);
@@ -314,8 +333,8 @@ describe("GET /api/tokens/search", () => {
   });
 
   it("should return validation error for invalid date format", async () => {
-    const response = await request(app).get(
-      "/api/tokens/search?startDate=not-a-date"
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?startDate=not-a-date")
     );
 
     expect(response.status).toBe(400);
@@ -323,18 +342,22 @@ describe("GET /api/tokens/search", () => {
   });
 
   it("should return validation error for invalid supply format", async () => {
-    const response = await request(app).get("/api/tokens/search?minSupply=abc");
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?minSupply=abc")
+    );
 
     expect(response.status).toBe(400);
     expect(response.body.success).toBe(false);
   });
 
-  it("should combine multiple filters", async () => {
+  it("should combine multiple filters within tenant scope", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[0]]);
     vi.mocked(prisma.token.count).mockResolvedValue(1);
 
-    const response = await request(app).get(
-      "/api/tokens/search?q=test&creator=GCREATOR1&hasBurns=true&minSupply=100000"
+    const response = await withTenant(
+      request(app).get(
+        "/api/tokens/search?q=test&hasBurns=true&minSupply=100000"
+      )
     );
 
     expect(response.status).toBe(200);
@@ -342,8 +365,8 @@ describe("GET /api/tokens/search", () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          creator: TENANT_ID,
           OR: expect.any(Array),
-          creator: "GCREATOR1",
           burnCount: { gt: 0 },
           totalSupply: expect.objectContaining({
             gte: BigInt(100000),
@@ -358,7 +381,7 @@ describe("GET /api/tokens/search", () => {
       new Error("Database connection failed")
     );
 
-    const response = await request(app).get("/api/tokens/search");
+    const response = await withTenant(request(app).get("/api/tokens/search"));
 
     expect(response.status).toBe(500);
     expect(response.body.success).toBe(false);
@@ -369,13 +392,15 @@ describe("GET /api/tokens/search", () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
-    const response = await request(app).get(
-      "/api/tokens/search?q=test&creator=GCREATOR1&sortBy=burned&sortOrder=desc"
+    const response = await withTenant(
+      request(app).get(
+        "/api/tokens/search?q=test&sortBy=burned&sortOrder=desc"
+      )
     );
 
     expect(response.body.filters).toEqual({
       q: "test",
-      creator: "GCREATOR1",
+      creator: undefined,
       startDate: undefined,
       endDate: undefined,
       minSupply: undefined,
@@ -386,16 +411,20 @@ describe("GET /api/tokens/search", () => {
     });
   });
 
-  it("should use cache for repeated requests", async () => {
+  it("should use cache for repeated requests (per tenant)", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
     // First request
-    const response1 = await request(app).get("/api/tokens/search?q=test");
+    const response1 = await withTenant(
+      request(app).get("/api/tokens/search?q=test")
+    );
     expect(response1.body.cached).toBeUndefined();
 
     // Second request (should be cached)
-    const response2 = await request(app).get("/api/tokens/search?q=test");
+    const response2 = await withTenant(
+      request(app).get("/api/tokens/search?q=test")
+    );
     expect(response2.body.cached).toBe(true);
 
     // Prisma should only be called once

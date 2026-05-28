@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { Prisma } from "@prisma/client";
+import { eventBus } from "./eventBus";
 
 export enum TimePeriod {
   H24 = "24h",
@@ -43,6 +44,7 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+/** Safety-net TTL — entries are also evicted by event-driven invalidation. */
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 function getCacheKey(
@@ -69,6 +71,44 @@ function getFromCache(key: string): LeaderboardResponse | null {
 function setCache(key: string, data: LeaderboardResponse): void {
   cache.set(key, { data, timestamp: Date.now() });
 }
+
+/**
+ * Invalidate all cache entries whose key starts with `type:`.
+ * Scoped to the affected leaderboard — does not flush unrelated boards.
+ */
+function invalidateCacheByType(type: string): void {
+  const prefix = `${type}:`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) {
+      cache.delete(key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event-driven cache invalidation
+// ---------------------------------------------------------------------------
+
+/**
+ * Leaderboard event names published by other services:
+ *   "burn.created"  — a BurnRecord was inserted  (payload: { tokenId })
+ *   "token.created" — a Token was created         (payload: { tokenId })
+ *
+ * Call `eventBus.publish("burn.created", { tokenId })` from the burn handler,
+ * and `eventBus.publish("token.created", { tokenId })` from the token handler.
+ */
+eventBus.subscribe<{ tokenId?: string }>("burn.created", () => {
+  // A burn affects burn-volume, burn-count, and unique-burner leaderboards.
+  invalidateCacheByType("most-burned");
+  invalidateCacheByType("most-active");
+  invalidateCacheByType("most-burners");
+});
+
+eventBus.subscribe<{ tokenId?: string }>("token.created", () => {
+  // A new token affects the newest and largest-supply leaderboards.
+  invalidateCacheByType("newest");
+  invalidateCacheByType("largest-supply");
+});
 
 function getDateFilter(period: TimePeriod): Date | null {
   if (period === TimePeriod.ALL) return null;

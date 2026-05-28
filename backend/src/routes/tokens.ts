@@ -1,17 +1,23 @@
 import { Router, Request, Response } from "express";
 import { performance } from "perf_hooks";
 import { prisma } from "../lib/prisma";
-
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { TokenSearchResponse } from "../contracts/apiSchemas";
+import {
+  tenantMiddleware,
+  type TenantRequest,
+} from "../middleware/tenancy";
 
 const router = Router();
 
+// Enforce tenant context on every token request — cross-tenant reads are rejected.
+router.use(tenantMiddleware({ required: true }));
+
 // Validation schema for search parameters
+// `creator` is intentionally omitted — the tenant scope always sets it.
 const searchParamsSchema = z.object({
   q: z.string().optional(),
-  creator: z.string().optional(),
   startDate: z.string().datetime().optional(),
   endDate: z.string().datetime().optional(),
   minSupply: z.string().regex(/^\d+$/).optional(),
@@ -54,10 +60,15 @@ function setCache(key: string, data: any) {
 
 /**
  * GET /api/tokens/search
- * Search and discover tokens with filters, sorting, and pagination
+ * Search and discover tokens with filters, sorting, and pagination.
+ * Results are always scoped to the requesting tenant (resolved via
+ * X-Tenant-ID header or JWT claim).
  */
-router.get("/search", async (req: Request, res: Response) => {
+router.get("/search", async (req: TenantRequest & Request, res: Response) => {
   try {
+    // req.tenant is guaranteed by tenantMiddleware({ required: true })
+    const tenantId = req.tenant!.id;
+
     // Validate parameters
     const validationResult = searchParamsSchema.safeParse(req.query);
 
@@ -71,8 +82,8 @@ router.get("/search", async (req: Request, res: Response) => {
 
     const params = validationResult.data;
 
-    // Check cache
-    const cacheKey = getCacheKey(params);
+    // Cache key includes tenantId so tenants never share cached slices
+    const cacheKey = getCacheKey({ ...params, tenantId });
     const cachedResult = getFromCache(cacheKey);
     if (cachedResult) {
       return res.json({
@@ -86,8 +97,12 @@ router.get("/search", async (req: Request, res: Response) => {
     const limit = Math.min(parseInt(params.limit), 50); // Max 50 per page
     const skip = (page - 1) * limit;
 
-    // Build where clause
-    const where: Prisma.TokenWhereInput = {};
+    // Build where clause — always scoped to the requesting tenant.
+    // The explicit `creator` query param is intentionally ignored: tenants may
+    // only query their own tokens, so the scope is always `creator = tenantId`.
+    const where: Prisma.TokenWhereInput = {
+      creator: tenantId,
+    };
 
     // Full-text search by name or symbol
     if (params.q) {
@@ -95,11 +110,6 @@ router.get("/search", async (req: Request, res: Response) => {
         { name: { contains: params.q, mode: "insensitive" } },
         { symbol: { contains: params.q, mode: "insensitive" } },
       ];
-    }
-
-    // Filter by creator
-    if (params.creator) {
-      where.creator = params.creator;
     }
 
     // Filter by creation date range
@@ -204,7 +214,7 @@ router.get("/search", async (req: Request, res: Response) => {
       },
       filters: {
         q: params.q,
-        creator: params.creator,
+        creator: undefined,
         startDate: params.startDate,
         endDate: params.endDate,
         minSupply: params.minSupply,

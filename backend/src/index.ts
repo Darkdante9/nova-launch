@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Router } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -27,6 +27,8 @@ import { requestLoggingMiddleware } from "./middleware/request-logging.middlewar
 import { createTimeoutMiddleware } from "./middleware/timeout";
 import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
+import { registerPoolMetrics } from "./lib/metrics/poolMetrics";
+import { prisma } from "./lib/prisma";
 import stellarEventListener from "./services/stellarEventListener";
 import websocketService from "./services/websocket";
 
@@ -62,40 +64,52 @@ const limiter = rateLimit({
   message: "Too many requests from this IP, please try again later.",
 });
 
-app.use("/api/admin", limiter);
-app.use("/api/analytics", limiter);
-app.use("/api/leaderboard", limiter);
-app.use("/api/tokens", limiter);
-app.use("/api/dividends", limiter);
-app.use("/api/stats", limiter);
-app.use("/api/governance", limiter);
-app.use("/api/campaigns", limiter);
-app.use("/api/streams", limiter);
-app.use("/api/vaults", limiter);
-
 // Body parsing middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize database
+// Initialize database and pool metrics
 Database.initialize();
+registerPoolMetrics(prisma);
 
-// Routes
-app.use("/api/admin", adminRoutes);
-app.use("/api/analytics", analyticsRoutes);
-app.use("/api/leaderboard", leaderboardRoutes);
-app.use("/api/tokens", tokenRoutes);
-app.use("/api/dividends", dividendRoutes);
-app.use("/api/stats", statsRoutes);
-app.use("/api/governance", governanceRoutes);
-app.use("/api/campaigns", campaignRoutes);
-app.use("/api/streams", streamRoutes);
-app.use("/api/vaults", vaultRoutes);
-app.use("/api/version", versionRoutes);
-app.use("/api/search", searchRoutes);
-app.use("/api/export", exportRoutes);
-app.use("/api/graphql", graphqlRouter);
-app.use("/api/docs", openApiRouter);
+// ---------------------------------------------------------------------------
+// Versioned API router (v1)
+//
+// All routes live under /api/v1/<resource>.  A backward-compat alias mounts
+// the same router at /api/<resource> so existing clients continue to work.
+//
+// The X-API-Version response header tells clients which version served them.
+// ---------------------------------------------------------------------------
+
+const v1Router = Router();
+
+// Version header on every v1 response
+v1Router.use((_req, res, next) => {
+  res.setHeader("X-API-Version", "v1");
+  next();
+});
+
+v1Router.use("/admin", limiter, adminRoutes);
+v1Router.use("/analytics", limiter, analyticsRoutes);
+v1Router.use("/leaderboard", limiter, leaderboardRoutes);
+v1Router.use("/tokens", limiter, tokenRoutes);
+v1Router.use("/dividends", limiter, dividendRoutes);
+v1Router.use("/stats", limiter, statsRoutes);
+v1Router.use("/governance", limiter, governanceRoutes);
+v1Router.use("/campaigns", limiter, campaignRoutes);
+v1Router.use("/streams", limiter, streamRoutes);
+v1Router.use("/vaults", limiter, vaultRoutes);
+v1Router.use("/version", versionRoutes);
+v1Router.use("/search", searchRoutes);
+v1Router.use("/export", exportRoutes);
+v1Router.use("/graphql", graphqlRouter);
+v1Router.use("/docs", openApiRouter);
+
+// Canonical versioned mount
+app.use("/api/v1", v1Router);
+
+// Backward-compatibility alias — clients targeting /api/<resource> continue to work
+app.use("/api", v1Router);
 
 import { healthService } from "./lib/health/health.service";
 import { isAppError, toAppError } from "./lib/errors";

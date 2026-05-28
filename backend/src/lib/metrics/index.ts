@@ -178,6 +178,18 @@ export const dbConnectionsIdle = new Gauge({
   registers: [register],
 });
 
+export const dbConnectionsWaiting = new Gauge({
+  name: "db_connections_waiting",
+  help: "Number of queries waiting to acquire a database connection",
+  registers: [register],
+});
+
+export const dbPoolSaturation = new Gauge({
+  name: "db_pool_saturation",
+  help: "Connection pool saturation ratio (active / max pool size)",
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Wallet Metrics
 // ---------------------------------------------------------------------------
@@ -564,9 +576,16 @@ export class MetricsCollector {
     healthCheckDuration.observe({ service }, durationSeconds);
   }
 
-  static updateDatabaseConnections(active: number, idle: number): void {
+  static updateDatabaseConnections(
+    active: number,
+    idle: number,
+    waiting = 0,
+    maxPoolSize = 10
+  ): void {
     dbConnectionsActive.set(active);
     dbConnectionsIdle.set(idle);
+    dbConnectionsWaiting.set(waiting);
+    dbPoolSaturation.set(maxPoolSize > 0 ? active / maxPoolSize : 0);
   }
 
   static updateJobQueueSize(queueName: string, size: number): void {
