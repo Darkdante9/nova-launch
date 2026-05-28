@@ -147,6 +147,7 @@ impl GovernanceContract {
         env: Env,
         creator: Address,
         description: String,
+        payload: soroban_sdk::Bytes,
         voting_period: u64,
         quorum: i128,
         threshold_percent: u32,
@@ -163,11 +164,38 @@ impl GovernanceContract {
             threshold_percent,
             votes_for: 0,
             votes_against: 0,
+            payload,
             status: ProposalStatus::Active,
         };
         storage::set_proposal(&env, proposal_id, &proposal);
         storage::set_proposal_count(&env, proposal_id + 1);
         proposal_id
+    }
+
+    /// Execute a passed proposal (atomically with state change)
+    pub fn execute_proposal(env: Env, proposal_id: u32) -> Result<(), FinalizationError> {
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .ok_or(FinalizationError::ProposalNotFound)?;
+
+        if proposal.status == ProposalStatus::Executed {
+            return Err(FinalizationError::AlreadyExecuted);
+        }
+
+        if proposal.status != ProposalStatus::Passed {
+            return Err(FinalizationError::ProposalNotPassed);
+        }
+
+        // Atomically mark as executed
+        proposal.status = ProposalStatus::Executed;
+        storage::set_proposal(&env, proposal_id, &proposal);
+
+        // Emit execution event (actual side effects would be triggered here or by caller)
+        env.events().publish(
+            (soroban_sdk::symbol_short!("exec_prop"), proposal_id),
+            proposal.description,
+        );
+
+        Ok(())
     }
 
     pub fn cast_vote(

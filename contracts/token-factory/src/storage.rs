@@ -55,6 +55,24 @@ pub fn set_treasury(env: &Env, treasury: &Address) {
     env.storage().instance().set(&DataKey::Treasury, treasury);
 }
 
+// Fee token management
+pub fn get_fee_token(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::FeeToken)
+}
+
+pub fn set_fee_token(env: &Env, token: &Address) {
+    env.storage().instance().set(&DataKey::FeeToken, token);
+}
+
+// Governance management
+pub fn get_governance(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Governance)
+}
+
+pub fn set_governance(env: &Env, governance: &Address) {
+    env.storage().instance().set(&DataKey::Governance, governance);
+}
+
 // Fee management
 pub fn get_base_fee(env: &Env) -> i128 {
     env.storage().instance().get(&DataKey::BaseFee).unwrap()

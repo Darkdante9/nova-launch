@@ -26,6 +26,7 @@ fn validate_token_params(
 
     // Validate initial supply (must be positive)
     if initial_supply <= 0 {
+        crate::events::emit_error_detail(env, Error::InvalidTokenParams as u32, initial_supply);
         return Err(Error::InvalidTokenParams);
     }
 
@@ -132,6 +133,7 @@ pub fn create_token(
     // Calculate and verify fee
     let required_fee = calculate_creation_fee(env, metadata_uri.is_some());
     if fee_payment < required_fee {
+        crate::events::emit_error_detail(env, Error::InsufficientFee as u32, required_fee - fee_payment);
         return Err(Error::InsufficientFee);
     }
 
@@ -154,9 +156,19 @@ pub fn create_token(
     // Credit referral commission if the creator has a registered referrer.
     crate::referral::credit_commission(env, &creator, token_index, fee_payment);
 
-    // Transfer fee to treasury (placeholder - in production would use actual token transfer)
-    // let treasury = storage::get_treasury(env);
-    // token::transfer(env, &creator, &treasury, fee_payment);
+    // Transfer fee to treasury
+    let treasury = storage::get_treasury(env);
+    
+    // Validate treasury is not the creator or zero address (though generate_address handles zero usually)
+    if treasury == creator {
+        crate::events::emit_error_detail(env, Error::InvalidParameters as u32, 100); // 100 = self treasury
+        return Err(Error::InvalidParameters);
+    }
+
+    if let Some(fee_token) = storage::get_fee_token(env) {
+        let client = soroban_sdk::token::Client::new(env, &fee_token);
+        client.transfer(&creator, &treasury, &required_fee);
+    }
 
     Ok(token_address)
 }
@@ -252,9 +264,17 @@ pub fn batch_create_tokens(
     // Emit batch creation event
     crate::events::emit_batch_tokens_created(env, &creator, tokens.len() as u32);
 
-    // Transfer total fee to treasury (placeholder)
-    // let treasury = storage::get_treasury(env);
-    // token::transfer(env, &creator, &treasury, total_fee_payment);
+    // Transfer total fee to treasury
+    let treasury = storage::get_treasury(env);
+    
+    if treasury == creator {
+        return Err(Error::InvalidParameters);
+    }
+
+    if let Some(fee_token) = storage::get_fee_token(env) {
+        let client = soroban_sdk::token::Client::new(env, &fee_token);
+        client.transfer(&creator, &treasury, &total_required_fee);
+    }
 
     Ok(created_addresses)
 }

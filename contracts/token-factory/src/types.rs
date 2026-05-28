@@ -633,8 +633,16 @@ pub enum DataKey {
     SupplySnapshotCount(u32),
     /// Individual supply snapshot: (token_index, snapshot_index)
     SupplySnapshot(u32, u32),
-    /// Cross-contract trusted caller registry: keyed by caller Address
-    TrustedCaller(Address),
+    /// Index of the token used for fee payments
+    FeeToken,
+    /// Address of the governance contract authorized for restricted operations
+    Governance,
+    /// Metadata history record: (token_index, record_index)
+    MetadataHistory(u32, u32),
+    /// Burn schedules for a token: (token_index, schedule_index)
+    BurnSchedulesByToken(u32, u32),
+    /// Number of burn schedules for a token
+    BurnScheduleCountByToken(u32),
 }
 
 /// A point-in-time record of a token holder's balance.

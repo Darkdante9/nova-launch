@@ -490,6 +490,7 @@ fn proposal_voting_period_before_end() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &1000_u64, // Long voting period
         &50_i128,
         &50_u32,
@@ -514,6 +515,7 @@ fn proposal_voting_period_after_end() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64, // Voting period ends immediately
         &50_i128,
         &50_u32,
@@ -533,6 +535,7 @@ fn proposal_finalize_before_voting_period_ends() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &1000_u64, // Long voting period
         &50_i128,
         &50_u32,
@@ -551,6 +554,7 @@ fn proposal_finalize_after_voting_period_ends() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64, // Voting period ends immediately
         &50_i128,
         &50_u32,
@@ -576,6 +580,7 @@ fn proposal_state_active_to_passed() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &50_i128,  // Quorum: 50
         &50_u32,   // Threshold: 50%
@@ -601,6 +606,7 @@ fn proposal_state_active_to_rejected() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &100_i128, // Quorum: 100
         &50_u32,   // Threshold: 50%
@@ -625,6 +631,7 @@ fn proposal_state_active_to_failed_no_quorum() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &100_i128, // Quorum: 100 (not met)
         &50_u32,
@@ -649,6 +656,7 @@ fn proposal_cannot_finalize_twice() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &50_i128,
         &50_u32,
@@ -676,6 +684,7 @@ fn proposal_cannot_vote_on_finalized() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &50_i128,
         &50_u32,
@@ -701,6 +710,7 @@ fn proposal_cannot_vote_twice() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &100_u64,
         &50_i128,
         &50_u32,
@@ -731,6 +741,7 @@ fn proposal_vote_accumulation_linear() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &100_u64,
         &500_i128,
         &50_u32,
@@ -766,6 +777,7 @@ fn proposal_vote_rounding_behavior() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &150_i128,
         &33_u32, // 33% threshold
@@ -796,6 +808,7 @@ fn proposal_lifecycle_creation_to_completion() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Full lifecycle proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64,
         &50_i128,
         &50_u32,
@@ -835,6 +848,7 @@ fn proposal_rejects_operations_on_inactive() {
     let proposal_id = c.create_proposal(
         &creator,
         &String::from_str(&env, "Test proposal"),
+        &soroban_sdk::Bytes::new(&env),
         &0_u64, // Voting period already ended
         &50_i128,
         &50_u32,

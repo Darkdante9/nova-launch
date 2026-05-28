@@ -40,6 +40,7 @@ pub fn validate_payload(env: &Env, action_type: ActionType, payload: &Bytes) -> 
         ActionType::PauseContract => validate_pause_payload(payload),
         ActionType::UnpauseContract => validate_unpause_payload(payload),
         ActionType::PolicyUpdate => validate_policy_payload(payload),
+        ActionType::ParameterChange => Ok(()), // Placeholder validation
     }
 }
 

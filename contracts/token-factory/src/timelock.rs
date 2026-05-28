@@ -1334,6 +1334,9 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
             };
             storage::set_treasury_policy(env, &policy);
         }
+        ActionType::ParameterChange => {
+            // Placeholder for parameter change execution logic
+        }
     }
 
     // Transition to Executed state

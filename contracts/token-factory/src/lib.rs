@@ -222,6 +222,28 @@ impl TokenFactory {
         Ok(())
     }
 
+    /// Set the token used for fee payments (admin only)
+    pub fn set_fee_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_fee_token(&env, &token);
+        Ok(())
+    }
+
+    /// Set the governance contract address (admin only)
+    pub fn set_governance(env: Env, admin: Address, governance: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_governance(&env, &governance);
+        Ok(())
+    }
+
 
 
     /// Get the current factory state

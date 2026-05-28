@@ -83,3 +83,22 @@ pub fn emit_pause_changed(env: &Env, admin: &Address, paused: bool) {
         (admin.clone(), paused),
     );
 }
+
+/// Emit enriched error detail event
+/// 
+/// **Event Name**: err_det
+/// 
+/// **Topics** (indexed):
+/// - Event name: "err_det"
+/// - error_code: u32 - Numerical representation of the error
+/// 
+/// **Payload** (non-indexed):
+/// - context: i128 - Additional context (e.g. proposal_id, amount)
+/// 
+/// Emitted when a high-value data path fails to provide structured diagnostic data.
+pub fn emit_error_detail(env: &Env, error_code: u32, context: i128) {
+    env.events().publish(
+        (symbol_short!("err_det"), error_code),
+        (context,),
+    );
+}

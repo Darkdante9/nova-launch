@@ -94,6 +94,7 @@ pub struct GovernanceProposal {
     pub threshold_percent: u32,
     pub votes_for: i128,
     pub votes_against: i128,
+    pub payload: soroban_sdk::Bytes,
     pub status: ProposalStatus,
 }
 
@@ -105,6 +106,7 @@ pub enum ProposalStatus {
     Passed,
     Rejected,
     Failed,
+    Executed,
 }
 
 /// A single vote cast on a proposal.
@@ -168,4 +170,6 @@ pub enum FinalizationError {
     ProposalNotFound = 1,
     VotingPeriodNotEnded = 2,
     AlreadyFinalized = 3,
+    AlreadyExecuted = 4,
+    ProposalNotPassed = 5,
 }

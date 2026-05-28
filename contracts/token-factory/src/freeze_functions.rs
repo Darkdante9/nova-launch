@@ -41,21 +41,33 @@ pub fn freeze_address(
     admin.require_auth();
 
     // Verify token exists and get info
-    let token_info =
-        storage::get_token_info_by_address(env, token_address).ok_or(Error::TokenNotFound)?;
+    let token_info = match storage::get_token_info_by_address(env, token_address) {
+        Some(info) => info,
+        None => {
+            events::emit_error_detail(env, Error::TokenNotFound as u32, 0);
+            return Err(Error::TokenNotFound);
+        }
+    };
 
-    // Verify admin is the token creator
-    if token_info.creator != *admin {
+    // Governance gating: if governance is set, only governance can freeze.
+    let governance = storage::get_governance(env);
+    if let Some(gov_addr) = governance {
+        if *admin != gov_addr {
+            return Err(Error::Unauthorized);
+        }
+    } else if token_info.creator != *admin {
         return Err(Error::Unauthorized);
     }
 
     // Verify freeze is enabled for this token
     if !token_info.freeze_enabled {
+        events::emit_error_detail(env, Error::Unauthorized as u32, token_info.token_index as i128);
         return Err(Error::Unauthorized);
     }
 
     // Check if address is already frozen
     if storage::is_address_frozen(env, token_address, address_to_freeze) {
+        events::emit_error_detail(env, Error::InvalidParameters as u32, 1); // 1 = already frozen
         return Err(Error::InvalidParameters);
     }
 
@@ -115,21 +127,33 @@ pub fn unfreeze_address(
     admin.require_auth();
 
     // Verify token exists and get info
-    let token_info =
-        storage::get_token_info_by_address(env, token_address).ok_or(Error::TokenNotFound)?;
+    let token_info = match storage::get_token_info_by_address(env, token_address) {
+        Some(info) => info,
+        None => {
+            events::emit_error_detail(env, Error::TokenNotFound as u32, 0);
+            return Err(Error::TokenNotFound);
+        }
+    };
 
-    // Verify admin is the token creator
-    if token_info.creator != *admin {
+    // Governance gating
+    let governance = storage::get_governance(env);
+    if let Some(gov_addr) = governance {
+        if *admin != gov_addr {
+            return Err(Error::Unauthorized);
+        }
+    } else if token_info.creator != *admin {
         return Err(Error::Unauthorized);
     }
 
     // Verify freeze is enabled for this token
     if !token_info.freeze_enabled {
+        events::emit_error_detail(env, Error::Unauthorized as u32, token_info.token_index as i128);
         return Err(Error::Unauthorized);
     }
 
     // Check if address is actually frozen
     if !storage::is_address_frozen(env, token_address, address_to_unfreeze) {
+        events::emit_error_detail(env, Error::InvalidParameters as u32, 2); // 2 = not frozen
         return Err(Error::InvalidParameters);
     }
 
