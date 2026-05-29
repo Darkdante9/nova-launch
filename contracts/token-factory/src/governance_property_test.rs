@@ -146,7 +146,7 @@ mod property_tests {
             
             let start_time = test_env.env.ledger().timestamp() + 1000;
             let end_time = start_time + 10000;
-            let eta = end_time + 5000;
+            let eta = end_time + 7200; // 2 hours — within [MIN=3600, MAX=2592000]
             
             let proposal_id = timelock::create_proposal(
                 &test_env.env,
@@ -192,7 +192,7 @@ mod property_tests {
             
             let start_time = test_env.env.ledger().timestamp() + 1000;
             let end_time = start_time + 5000;
-            let eta = end_time + 1000;
+            let eta = end_time + 3600; // exactly MIN_TIMELOCK_DELAY
             
             let proposal_id = timelock::create_proposal(
                 &test_env.env,

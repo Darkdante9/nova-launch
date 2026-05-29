@@ -139,12 +139,12 @@ fn test_chaos_create_proposal_eta_boundaries() {
     );
     assert_eq!(result, Err(Error::InvalidTimeWindow), "Should reject eta = end_time");
     
-    // Test: eta = end_time + 1 (boundary: minimum valid)
+    // Test: eta = end_time + 1 (below MIN_TIMELOCK_DELAY=3600, must be rejected)
     let result = create_proposal(
         &env, &admin, ActionType::FeeChange, payload.clone(),
         start_time, end_time, end_time + 1,
     );
-    assert!(result.is_ok(), "Should allow eta = end_time + 1");
+    assert!(result.is_err(), "Should reject eta delay below MIN_TIMELOCK_DELAY");
     
     // Test: eta = end_time - 1 (boundary: before end)
     let result = create_proposal(
@@ -355,12 +355,12 @@ fn test_chaos_zero_duration_windows() {
     );
     assert!(result.is_ok(), "Should allow minimum 1-second voting window");
     
-    // Test: eta = end_time + 1 (minimum delay)
+    // Test: eta = end_time + 3600 (exactly MIN_TIMELOCK_DELAY — must succeed)
     let result = create_proposal(
         &env, &admin, ActionType::FeeChange, payload,
-        start_time, start_time + 100, start_time + 101,
+        start_time, start_time + 100, start_time + 100 + 3600,
     );
-    assert!(result.is_ok(), "Should allow minimum 1-second eta delay");
+    assert!(result.is_ok(), "Should allow eta delay == MIN_TIMELOCK_DELAY");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -413,7 +413,7 @@ fn test_chaos_proposal_lifecycle_all_boundaries() {
     let base_time = current_time(&env);
     let start_time = base_time + 100;
     let end_time = start_time + 1000;
-    let eta = end_time + 500;
+    let eta = end_time + 3600;
     
     let payload = vec![&env, 1u8];
     
@@ -538,7 +538,7 @@ fn test_chaos_comprehensive_boundary_verification() {
     // Define all critical timestamps
     let start = base + 1000;
     let end = start + 5000;
-    let eta = end + 2000;
+    let eta = end + 3600;
     let timelock_delay = 3600;
     
     let payload = vec![&env, 1u8];

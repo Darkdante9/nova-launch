@@ -679,8 +679,8 @@ impl TokenFactory {
         let new_base_fee = base_fee.unwrap_or_else(|| storage::get_base_fee(&env));
         let new_metadata_fee = metadata_fee.unwrap_or_else(|| storage::get_metadata_fee(&env));
 
-        // Emit optimized event
-        events::emit_fees_updated(&env, new_base_fee, new_metadata_fee);
+        // Emit structured event with acting admin (closes #1127)
+        events::emit_fees_updated_v2(&env, &admin, new_base_fee, new_metadata_fee);
         Ok(())
     }
 
@@ -774,7 +774,7 @@ impl TokenFactory {
         let final_metadata_fee = storage::get_metadata_fee(&env);
 
         // Emit single consolidated event (Phase 2 optimization)
-        events::emit_fees_updated(&env, final_base_fee, final_metadata_fee);
+        events::emit_fees_updated_v2(&env, &admin, final_base_fee, final_metadata_fee);
 
         Ok(())
     }
@@ -3636,7 +3636,7 @@ impl TokenFactory {
                 }
                 storage::set_base_fee(env, base_fee);
                 storage::set_metadata_fee(env, metadata_fee);
-                events::emit_fees_updated(env, base_fee, metadata_fee);
+                events::emit_fees_updated_v2(env, executor, base_fee, metadata_fee);
             }
             types::MultiSigAction::PauseContract => {
                 storage::set_paused(env, true);

@@ -234,6 +234,25 @@ pub fn emit_fees_updated(env: &Env, base_fee: i128, metadata_fee: i128) {
         .publish((symbol_short!("fee_up_v1"),), (base_fee, metadata_fee));
 }
 
+/// Emit fees updated event (v2) — includes acting admin
+///
+/// **Schema Version**: 2
+/// **Event Name**: fee_up_v2
+///
+/// **Topics** (indexed):
+/// - Event name: "fee_up_v2"
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who performed the fee update
+/// - base_fee: i128 - New base fee amount in stroops
+/// - metadata_fee: i128 - New metadata fee amount in stroops
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fees_updated_v2(env: &Env, admin: &Address, base_fee: i128, metadata_fee: i128) {
+    env.events()
+        .publish((symbol_short!("fee_up_v2"),), (admin.clone(), base_fee, metadata_fee));
+}
+
 /// Emit admin burn event (v1)
 ///
 /// **Schema Version**: 1
@@ -813,6 +832,17 @@ pub fn emit_proposal_executed(
     env.events().publish(
         (symbol_short!("prop_exec"), proposal_id),
         (executor, success),
+    );
+}
+
+/// Emit proposal executable event
+///
+/// Published when a proposal's timelock delay has elapsed and it is ready to execute.
+/// Topics: ("prp_rdy_v1", proposal_id). Payload: (eta,).
+pub fn emit_proposal_executable(env: &Env, proposal_id: u64, eta: u64) {
+    env.events().publish(
+        (symbol_short!("prp_rdy_v1"), proposal_id),
+        (eta,),
     );
 }
 

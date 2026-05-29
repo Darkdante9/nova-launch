@@ -242,3 +242,27 @@ fn regression_one_invalid_fails_all() {
     assert_eq!(state.base_fee, 100_000_000);
     assert_eq!(state.metadata_fee, 50_000_000);
 }
+
+#[test]
+fn fee_update_event_includes_admin() {
+    // #1127: fee_up_v2 event must include the acting admin address
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &100_000_000, &50_000_000);
+    client.update_fees(&admin, &Some(200_000_000), &Some(80_000_000));
+
+    let events = env.events().all();
+    let has_v2_event = events.iter().any(|e| {
+        e.0.iter().any(|t| {
+            t == soroban_sdk::Val::from(soroban_sdk::symbol_short!("fee_up_v2"))
+        })
+    });
+    assert!(has_v2_event, "fee_up_v2 event must be emitted on update_fees");
+}

@@ -3,6 +3,45 @@ use soroban_sdk::{Address, Env};
 use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, TokenInfo};
 
 // ============================================================
+// TTL Bump Constants (#1128)
+// ============================================================
+// Soroban ledger entries expire unless their TTL is extended.
+// Instance storage holds core admin state and must outlive any
+// individual token or stream. Persistent storage holds per-token
+// data that should survive at least one full governance cycle.
+//
+// Ledger closes roughly every 5 seconds on Stellar mainnet.
+// INSTANCE_TTL_BUMP  = ~1 year  (6_307_200 ledgers)
+// PERSISTENT_TTL_BUMP = ~30 days (518_400 ledgers)
+// INSTANCE_TTL_THRESHOLD  = trigger bump when < ~6 months remaining
+// PERSISTENT_TTL_THRESHOLD = trigger bump when < ~7 days remaining
+// ============================================================
+
+/// Minimum remaining TTL before an instance entry is bumped (~6 months).
+pub const INSTANCE_TTL_THRESHOLD: u32 = 3_153_600;
+/// Target TTL for instance storage entries (~1 year).
+pub const INSTANCE_TTL_BUMP: u32 = 6_307_200;
+
+/// Minimum remaining TTL before a persistent entry is bumped (~7 days).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 120_960;
+/// Target TTL for persistent storage entries (~30 days).
+pub const PERSISTENT_TTL_BUMP: u32 = 518_400;
+
+/// Extend instance storage TTL if below threshold.
+pub fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
+}
+
+/// Extend a persistent entry's TTL if below threshold.
+pub fn bump_persistent<K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_BUMP);
+}
+
+// ============================================================
 // Storage Functions - Burn Tracking
 // ============================================================
 // Available functions:
@@ -18,10 +57,12 @@ use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, TokenInfo};
 
 // Admin management
 pub fn get_admin(env: &Env) -> Address {
+    bump_instance(env);
     env.storage().instance().get(&DataKey::Admin).unwrap()
 }
 
 pub fn set_admin(env: &Env, admin: &Address) {
+    bump_instance(env);
     env.storage().instance().set(&DataKey::Admin, admin);
 }
 
@@ -99,10 +140,12 @@ pub fn get_token_count(env: &Env) -> u32 {
 }
 
 pub fn get_token_info(env: &Env, index: u32) -> Option<TokenInfo> {
+    bump_instance(env);
     env.storage().instance().get(&DataKey::Token(index))
 }
 
 pub fn set_token_info(env: &Env, index: u32, info: &TokenInfo) {
+    bump_instance(env);
     env.storage().instance().set(&DataKey::Token(index), info);
 
     // Index by creator for pagination
@@ -605,17 +648,18 @@ mod burn_security_tests {
 // ── Burn feature additions ─────────────────────────────────
 
 pub fn get_balance(env: &Env, token_index: u32, holder: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&crate::types::DataKey::Balance(token_index, holder.clone()))
-        .unwrap_or(0)
+    let key = crate::types::DataKey::Balance(token_index, holder.clone());
+    let val = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    val
 }
 
 pub fn set_balance(env: &Env, token_index: u32, holder: &Address, balance: i128) {
-    env.storage().persistent().set(
-        &crate::types::DataKey::Balance(token_index, holder.clone()),
-        &balance,
-    );
+    let key = crate::types::DataKey::Balance(token_index, holder.clone());
+    env.storage().persistent().set(&key, &balance);
+    bump_persistent(env, &key);
 }
 
 pub fn get_burn_count(env: &Env, token_index: u32) -> u32 {

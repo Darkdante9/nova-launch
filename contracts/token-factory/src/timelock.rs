@@ -11,8 +11,11 @@ use soroban_sdk::{Address, Bytes, Env, Vec};
 /// Default timelock delay in seconds (48 hours)
 const DEFAULT_TIMELOCK_DELAY: u64 = 172_800;
 
+/// Minimum timelock delay in seconds (1 hour) — prevents zero-delay bypasses.
+pub const MIN_TIMELOCK_DELAY: u64 = 3_600;
+
 /// Maximum timelock delay in seconds (30 days)
-const MAX_TIMELOCK_DELAY: u64 = 2_592_000;
+pub const MAX_TIMELOCK_DELAY: u64 = 2_592_000;
 
 /// Initialize timelock configuration
 ///
@@ -24,11 +27,11 @@ const MAX_TIMELOCK_DELAY: u64 = 2_592_000;
 /// * `delay_seconds` - Delay in seconds before changes can be executed
 ///
 /// # Errors
-/// * `Error::InvalidParameters` - Delay exceeds maximum allowed
+/// * `Error::InvalidParameters` - Delay is below minimum or exceeds maximum allowed
 pub fn initialize_timelock(env: &Env, delay_seconds: Option<u64>) -> Result<(), Error> {
     let delay = delay_seconds.unwrap_or(DEFAULT_TIMELOCK_DELAY);
 
-    if delay > MAX_TIMELOCK_DELAY {
+    if delay < MIN_TIMELOCK_DELAY || delay > MAX_TIMELOCK_DELAY {
         return Err(Error::InvalidParameters);
     }
 
@@ -261,7 +264,7 @@ pub fn execute_change(env: &Env, change_id: u64) -> Result<(), Error> {
             let new_metadata = pending_change
                 .metadata_fee
                 .unwrap_or_else(|| storage::get_metadata_fee(env));
-            events::emit_fees_updated(env, new_base, new_metadata);
+            events::emit_fees_updated_v2(env, &pending_change.scheduled_by, new_base, new_metadata);
         }
         ChangeType::PauseUpdate => {
             if let Some(paused) = pending_change.paused {
@@ -511,6 +514,12 @@ pub fn create_proposal(
     // eta must be after end_time
     if eta <= end_time {
         return Err(Error::InvalidTimeWindow);
+    }
+
+    // eta delay (eta - end_time) must be within [MIN_TIMELOCK_DELAY, MAX_TIMELOCK_DELAY]
+    let eta_delay = eta.checked_sub(end_time).ok_or(Error::ArithmeticError)?;
+    if eta_delay < MIN_TIMELOCK_DELAY || eta_delay > MAX_TIMELOCK_DELAY {
+        return Err(Error::InvalidParameters);
     }
 
     // Validate payload bounds
@@ -1304,12 +1313,15 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
         return Err(Error::TimelockNotExpired);
     }
 
+    // Emit event signalling the proposal is now executable (timelock elapsed)
+    events::emit_proposal_executable(env, proposal_id, proposal.eta);
+
     match proposal.action_type {
         ActionType::FeeChange => {
             let (base_fee, metadata_fee) = payload_validation::parse_fee_payload(&proposal.payload);
             storage::set_base_fee(env, base_fee);
             storage::set_metadata_fee(env, metadata_fee);
-            events::emit_fees_updated(env, base_fee, metadata_fee);
+            events::emit_fees_updated_v2(env, &proposal.proposer, base_fee, metadata_fee);
         }
         ActionType::TreasuryChange => {
             let new_treasury = payload_validation::parse_treasury_payload(env, &proposal.payload);
