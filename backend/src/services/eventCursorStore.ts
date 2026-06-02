@@ -6,6 +6,9 @@ const CURSOR_KEY = "stellar_event_cursor";
  * Durable cursor store backed by Prisma IntegrationState.
  * 
  * **Issue #1156: Persist Stellar event subscription cursor for gap-free resume**
+ * 
+ * This implementation provides gap-free event stream resumption after service restarts,
+ * crashes, or deployments by persisting the last processed cursor to the database.
  *
  * ## Semantics: At-Least-Once Delivery
  * 
