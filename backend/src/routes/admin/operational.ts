@@ -8,7 +8,11 @@ import { Router } from 'express';
 import { prisma } from '../../lib/prisma';
 import { authenticateAdmin } from '../../middleware/auth';
 import { successResponse, errorResponse } from '../../utils/response';
-import { getIPFSCircuitBreakerMetrics, resetIPFSCircuitBreaker } from '../../lib/ipfs/pinata.js';
+import {
+  getIPFSCircuitBreakerMetrics,
+  resetIPFSCircuitBreaker,
+  rotatePinataCredentials,
+} from '../../lib/ipfs/pinata.js';
 
 const router = Router();
 
@@ -98,6 +102,42 @@ router.post('/circuit-breaker/ipfs/reset', authenticateAdmin, (_req, res) => {
       errorResponse({
         code: 'INTERNAL_SERVER_ERROR',
         message: 'Failed to reset circuit breaker',
+      }),
+    );
+  }
+});
+
+/**
+ * POST /api/admin/operational/pinata/credentials
+ * Validate and rotate Pinata API credentials without downtime.
+ * The new credential pair is checked before it becomes active.
+ */
+router.post('/pinata/credentials', authenticateAdmin, async (req, res) => {
+  try {
+    const { apiKey, apiSecret } = req.body;
+
+    if (!apiKey || !apiSecret) {
+      return res.status(400).json(
+        errorResponse({
+          code: 'INVALID_REQUEST',
+          message: 'apiKey and apiSecret are required',
+        }),
+      );
+    }
+
+    await rotatePinataCredentials(apiKey, apiSecret);
+
+    res.json(
+      successResponse({
+        message: 'Pinata credentials validated and rotated successfully',
+      }),
+    );
+  } catch (error) {
+    console.error('Error rotating Pinata credentials:', error);
+    res.status(500).json(
+      errorResponse({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to rotate Pinata credentials',
       }),
     );
   }

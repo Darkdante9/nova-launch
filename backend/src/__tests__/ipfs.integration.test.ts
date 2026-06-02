@@ -118,6 +118,60 @@ describe("IPFS Integration Tests", () => {
     });
   });
 
+  describe("Pinata credential rotation", () => {
+    beforeEach(() => {
+      vi.resetModules();
+      process.env.PINATA_API_KEY = "active-key";
+      process.env.PINATA_API_SECRET = "active-secret";
+    });
+
+    it("should validate a new Pinata credential pair", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true } as Response));
+      const { validatePinataCredentials } = await import("../lib/ipfs/pinata");
+
+      const valid = await validatePinataCredentials("new-key", "new-secret");
+
+      expect(valid).toBe(true);
+      expect((global.fetch as any)).toHaveBeenCalledWith(
+        "https://api.pinata.cloud/data/pinList?status=pinned&limit=1",
+        expect.objectContaining({
+          headers: {
+            pinata_api_key: "new-key",
+            pinata_secret_api_key: "new-secret",
+          },
+        })
+      );
+    });
+
+    it("should rotate credentials only after validation succeeds", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true } as Response));
+      const { rotatePinataCredentials, getActivePinataCredentials } = await import(
+        "../lib/ipfs/pinata"
+      );
+
+      await rotatePinataCredentials("new-key", "new-secret");
+
+      const active = getActivePinataCredentials();
+      expect(active.apiKey).toBe("new-key");
+      expect(active.apiSecret).toBe("new-secret");
+    });
+
+    it("should reject invalid rotated credentials and keep current credentials", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: false } as Response));
+      const { rotatePinataCredentials, getActivePinataCredentials } = await import(
+        "../lib/ipfs/pinata"
+      );
+
+      await expect(
+        rotatePinataCredentials("invalid-key", "invalid-secret")
+      ).rejects.toThrow("Pinata credential validation failed");
+
+      const active = getActivePinataCredentials();
+      expect(active.apiKey).toBe("active-key");
+      expect(active.apiSecret).toBe("active-secret");
+    });
+  });
+
   describe("Pinata Image Upload", () => {
     it("should upload image buffer successfully", async () => {
       const mockPinata = {
