@@ -103,3 +103,43 @@ npm run format:check
 npm run type-check
 npm test -- --run
 ```
+
+## CI Secrets Reference
+
+The following secrets must be configured in GitHub Actions (Settings → Secrets and variables → Actions) before the relevant workflows will pass.
+
+### Existing secrets
+
+| Secret | Used by | Notes |
+|--------|---------|-------|
+| `DATABASE_URL` | Backend CI, integration tests | PostgreSQL connection string |
+| `JWT_SECRET` | Backend CI | Auth token signing |
+| `REDIS_URL` | Backend CI | Rate limiter |
+
+### Email notification secrets (issue #1264)
+
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `SENDGRID_API_KEY` | Yes (if using SendGrid) | SendGrid v3 API key — starts with `SG.` |
+| `NOTIFICATION_FROM_EMAIL` | Yes (if using SendGrid) | Verified sender address, e.g. `noreply@nova-launch.app` |
+| `NOTIFICATION_EMAIL_API_URL` | Legacy fallback only | Generic HTTP email endpoint (used when `SENDGRID_API_KEY` is absent) |
+| `NOTIFICATION_EMAIL_API_KEY` | Optional | Bearer token for legacy HTTP email endpoint |
+
+### SMS notification secrets (issue #1264)
+
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `TWILIO_ACCOUNT_SID` | Yes (if using Twilio) | Twilio account SID — starts with `AC` |
+| `TWILIO_AUTH_TOKEN` | Yes (if using Twilio) | Twilio auth token |
+| `TWILIO_PHONE_NUMBER` | Yes (if using Twilio) | Verified Twilio sender number in E.164 format, e.g. `+15550001234` |
+| `NOTIFICATION_SMS_API_URL` | Legacy fallback only | Generic HTTP SMS endpoint (used when Twilio creds are absent) |
+| `NOTIFICATION_SMS_API_KEY` | Optional | Bearer token for legacy HTTP SMS endpoint |
+
+### Delivery tuning (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_RETRIES` | `3` | Max delivery attempts per notification (includes initial try) |
+| `NOTIFICATION_RATE_LIMIT_WINDOW_MS` | `3600000` | Rate-limit window in ms (1 hour) — one notification per recipient per event per window |
+
+> **PII policy:** Never log a full email address or phone number. The service masks all recipient identifiers before writing to logs (email → `****@domain.com`, phone → `****NNNN`). Do not weaken this in test fixtures or log assertions.
