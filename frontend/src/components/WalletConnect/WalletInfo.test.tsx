@@ -109,7 +109,7 @@ describe("WalletInfo", () => {
         expect(banner).toBeInTheDocument();
         expect(banner).toHaveTextContent("testnet");
         expect(banner).toHaveTextContent("mainnet");
-        expect(banner).toHaveTextContent("Please switch networks in Freighter before continuing.");
+        expect(banner).toHaveTextContent("Please switch networks in your wallet before continuing.");
     });
 
     it("hides the banner when dismiss button is clicked", () => {

@@ -84,7 +84,7 @@ export function WalletInfo({ wallet, onDisconnect, className = "" }: WalletInfoP
                             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                         </svg>
                         <span>
-                            Your wallet is connected to <strong>{walletNetwork}</strong> but this app is configured for <strong>{appNetwork}</strong>. Please switch networks in Freighter before continuing.
+                            Your wallet is connected to <strong>{walletNetwork}</strong> but this app is configured for <strong>{appNetwork}</strong>. Please switch networks in your wallet before continuing.
                         </span>
                     </div>
                     <button
@@ -111,6 +111,11 @@ export function WalletInfo({ wallet, onDisconnect, className = "" }: WalletInfoP
                 </div>
 
                 <div className="flex flex-col min-w-0">
+                    {wallet.walletType && (
+                        <p className="text-xs text-blue-600 font-medium capitalize mb-0.5">
+                            {wallet.walletType}
+                        </p>
+                    )}
                     <div className="flex items-center gap-1">
                         <Tooltip content={wallet.address} position="bottom">
                             <span

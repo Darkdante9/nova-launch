@@ -2,77 +2,82 @@ import { useState, useCallback } from "react";
 import { LoadingButton } from "../UI";
 import { Button } from "../UI/Button";
 import { useToast } from "../../hooks/useToast";
+import { WalletSelector } from "./WalletSelector";
+import type { WalletType } from "../../types";
 
 interface ConnectButtonProps {
   onConnect?: (publicKey: string) => void;
   onError?: (error: Error) => void;
   className?: string;
-}
-
-interface FreighterResponse {
-  publicKey: string;
-}
-
-declare global {
-  interface Window {
-    freighter?: {
-      requestPublicKey: () => Promise<FreighterResponse>;
-    };
-  }
+  /** Called when the user selects a wallet from the modal. */
+  onWalletSelect?: (walletId: string, walletType: WalletType) => Promise<void>;
+  isConnecting?: boolean;
 }
 
 export function ConnectButton({
   onConnect,
   onError,
   className = "",
+  onWalletSelect,
+  isConnecting: externalConnecting,
 }: ConnectButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const { success, error: errorToast, info } = useToast();
 
-  const checkFreighterInstalled = useCallback((): boolean => {
-    return typeof window.freighter !== "undefined";
+  const isActuallyConnecting = externalConnecting ?? isLoading;
+
+  const handleOpenSelector = useCallback(() => {
+    setError(null);
+    setIsSelectorOpen(true);
   }, []);
 
-  const handleConnect = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
+  const handleWalletSelect = useCallback(
+    async (walletId: string, walletType: WalletType) => {
+      try {
+        setIsLoading(true);
+        setError(null);
 
-      // Check if Freighter is installed
-      if (!checkFreighterInstalled()) {
-        const errorMessage =
-          "Freighter wallet not installed. Please install the Freighter extension.";
-        setError(errorMessage);
-        errorToast(errorMessage);
-        onError?.(new Error(errorMessage));
+        if (onWalletSelect) {
+          await onWalletSelect(walletId, walletType);
+          // If onWalletSelect resolves, the parent controls connection state
+          return;
+        }
+
+        // Standalone mode: use window.freighter for backward compat when no handler is wired
+        if (walletId === "freighter") {
+          const win = window as unknown as Record<string, any>;
+          if (!win.freighter) {
+            const msg = "Freighter wallet not installed. Please install the Freighter extension.";
+            setError(msg);
+            errorToast(msg);
+            onError?.(new Error(msg));
+            return;
+          }
+          const response = await win.freighter.requestPublicKey();
+          if (response?.publicKey) {
+            setIsConnected(true);
+            setPublicKey(response.publicKey);
+            setIsSelectorOpen(false);
+            success(`Wallet connected: ${response.publicKey.slice(0, 8)}...`);
+            onConnect?.(response.publicKey);
+          }
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Failed to connect wallet. Please try again.";
+        setError(msg);
+        errorToast(msg);
+        onError?.(err instanceof Error ? err : new Error(msg));
+      } finally {
         setIsLoading(false);
-        return;
       }
-
-      // Request connection from Freighter
-      const response = await window.freighter?.requestPublicKey();
-
-      if (response && response.publicKey) {
-        setIsConnected(true);
-        setPublicKey(response.publicKey);
-        success(`Wallet connected: ${response.publicKey.slice(0, 8)}...`);
-        onConnect?.(response.publicKey);
-      }
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error
-          ? err.message
-          : "Failed to connect wallet. Please try again.";
-      setError(errorMessage);
-      errorToast(errorMessage);
-      onError?.(err instanceof Error ? err : new Error(errorMessage));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [checkFreighterInstalled, onConnect, onError, success, errorToast]);
+    },
+    [onWalletSelect, onConnect, onError, success, errorToast]
+  );
 
   const handleDisconnect = useCallback(() => {
     setIsConnected(false);
@@ -126,12 +131,11 @@ export function ConnectButton({
         </div>
       ) : (
         <LoadingButton
-          onClick={handleConnect}
-          loading={isLoading}
+          onClick={handleOpenSelector}
+          loading={isActuallyConnecting}
           loadingText="Connecting..."
-          disabled={!!error}
           size="md"
-          aria-label={isLoading ? "Connecting..." : "Connect Wallet"}
+          aria-label={isActuallyConnecting ? "Connecting..." : "Connect Wallet"}
           aria-describedby={error ? "wallet-error" : undefined}
         >
           Connect Wallet
@@ -160,6 +164,13 @@ export function ConnectButton({
           )}
         </div>
       )}
+
+      <WalletSelector
+        isOpen={isSelectorOpen}
+        onClose={() => setIsSelectorOpen(false)}
+        onSelect={handleWalletSelect}
+        isConnecting={isActuallyConnecting}
+      />
     </div>
   );
 }

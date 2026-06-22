@@ -1,16 +1,24 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { WalletService } from '../services/wallet';
 import { analytics, AnalyticsEvent } from '../services/analytics';
 import { ACTIVE_NETWORK, STELLAR_CONFIG } from '../config/stellar';
 import { checkNetworkContractMismatch } from '../utils/validation';
-import type { WalletState } from '../types';
+import {
+    StellarWalletsKit,
+    initWalletKit,
+    setKitNetwork,
+    WALLET_ID_MAP,
+} from '../services/walletKit';
+import { WalletService } from '../services/wallet';
+import type { WalletState, WalletType } from '../types';
 
 export const WALLET_CONNECTED_KEY = 'nova_wallet_connected';
 export const WALLET_STATE_KEY = 'nova_wallet_state';
+export const WALLET_TYPE_KEY = 'nova_wallet_type';
 
 interface PersistedWalletState {
     address: string;
     network: 'testnet' | 'mainnet';
+    walletType?: WalletType;
 }
 
 function loadPersistedWalletState(): PersistedWalletState | null {
@@ -25,14 +33,16 @@ function loadPersistedWalletState(): PersistedWalletState | null {
     }
 }
 
-function saveWalletState(address: string, network: 'testnet' | 'mainnet'): void {
+function saveWalletState(address: string, network: 'testnet' | 'mainnet', walletType?: WalletType): void {
     localStorage.setItem(WALLET_CONNECTED_KEY, 'true');
-    localStorage.setItem(WALLET_STATE_KEY, JSON.stringify({ address, network }));
+    localStorage.setItem(WALLET_STATE_KEY, JSON.stringify({ address, network, walletType }));
+    if (walletType) localStorage.setItem(WALLET_TYPE_KEY, walletType);
 }
 
 function clearWalletState(): void {
     localStorage.removeItem(WALLET_CONNECTED_KEY);
     localStorage.removeItem(WALLET_STATE_KEY);
+    localStorage.removeItem(WALLET_TYPE_KEY);
 }
 
 interface UseWalletOptions {
@@ -47,172 +57,214 @@ export const useWallet = (options: UseWalletOptions = {}) => {
         network: externalNetwork,
     });
     const [isConnecting, setIsConnecting] = useState(false);
+    const [isSelectorOpen, setIsSelectorOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [networkMismatchWarning, setNetworkMismatchWarning] = useState<string | null>(null);
-    const cleanupRef = useRef<(() => void) | null>(null);
     const isInitializedRef = useRef(false);
     const prevNetworkRef = useRef(externalNetwork);
 
-    const disconnect = useCallback(() => {
+    // Initialise the kit once on mount
+    useEffect(() => {
+        initWalletKit(externalNetwork);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const disconnect = useCallback(async () => {
+        try {
+            await StellarWalletsKit.disconnect();
+        } catch {}
+
         setWallet((prev) => ({
             connected: false,
             address: null,
             network: prev.network,
+            walletType: undefined,
         }));
         setError(null);
         clearWalletState();
-
-        if (cleanupRef.current) {
-            cleanupRef.current();
-            cleanupRef.current = null;
-        }
 
         try {
             analytics.track(AnalyticsEvent.WALLET_DISCONNECTED);
         } catch {}
     }, []);
 
+    // Sync network changes
     useEffect(() => {
         if (prevNetworkRef.current !== externalNetwork) {
             prevNetworkRef.current = externalNetwork;
+            setKitNetwork(externalNetwork);
             if (wallet.connected) {
-                disconnect();
+                void disconnect();
             }
             setWallet((prev) => ({ ...prev, network: externalNetwork }));
         }
     }, [externalNetwork, wallet.connected, disconnect]);
 
-    const updateWalletState = useCallback(async () => {
-        try {
-            const isInstalled = await WalletService.isInstalled();
-            if (!isInstalled) return false;
+    const resolveNetworkFromPassphrase = (passphrase: string): 'testnet' | 'mainnet' => {
+        return passphrase.toLowerCase().includes('test') ? 'testnet' : 'mainnet';
+    };
 
-            const address = await WalletService.getPublicKey();
-            if (!address) {
-                disconnect();
-                return false;
-            }
-
-            const network = await WalletService.getNetwork();
-            setWallet({
-                connected: true,
-                address,
-                network,
-            });
-            saveWalletState(address, network);
-
-            // Check for network/contract mismatch
-            const { mismatch, message } = checkNetworkContractMismatch(
-                STELLAR_CONFIG.factoryContractId,
-                network,
-                ACTIVE_NETWORK
-            );
-            setNetworkMismatchWarning(mismatch ? (message ?? null) : null);
-
-            // Privacy: do NOT send addresses or any PII. Only send non-identifying metadata.
+    const updateWalletState = useCallback(
+        async (walletType?: WalletType): Promise<boolean> => {
             try {
-                analytics.track(AnalyticsEvent.WALLET_CONNECTED, { network });
-            } catch {}
+                const { address } = await StellarWalletsKit.getAddress();
+                if (!address) {
+                    await disconnect();
+                    return false;
+                }
 
-            return true;
-        } catch (err) {
-            console.error('Failed to update wallet state:', err);
-            disconnect();
-            return false;
-        }
-    }, [disconnect]);
+                let network: 'testnet' | 'mainnet' = externalNetwork;
+                try {
+                    const { networkPassphrase } = await StellarWalletsKit.getNetwork();
+                    network = resolveNetworkFromPassphrase(networkPassphrase);
+                } catch {}
 
-    const setupListeners = useCallback(() => {
-        if (cleanupRef.current) cleanupRef.current();
+                const type = walletType ?? (loadPersistedWalletState()?.walletType);
+                setWallet({ connected: true, address, network, walletType: type });
+                saveWalletState(address, network, type);
 
-        cleanupRef.current = WalletService.watchChanges(({ address, network }) => {
-            const net = network.toLowerCase().includes('public') ? 'mainnet' : 'testnet';
-            if (address) {
-                setWallet({
-                    connected: true,
-                    address,
-                    network: net as 'testnet' | 'mainnet',
-                });
-                saveWalletState(address, net as 'testnet' | 'mainnet');
+                const { mismatch, message } = checkNetworkContractMismatch(
+                    STELLAR_CONFIG.factoryContractId,
+                    network,
+                    ACTIVE_NETWORK
+                );
+                setNetworkMismatchWarning(mismatch ? (message ?? null) : null);
 
                 try {
-                    analytics.track(AnalyticsEvent.NETWORK_SWITCHED, { to_network: net });
+                    analytics.track(AnalyticsEvent.WALLET_CONNECTED, { network, walletType: type });
                 } catch {}
-            } else {
-                disconnect();
-            }
-        });
-    }, [disconnect]);
 
+                return true;
+            } catch {
+                await disconnect();
+                return false;
+            }
+        },
+        [disconnect, externalNetwork]
+    );
+
+    /** Open the wallet selector modal */
+    const openSelector = useCallback(() => {
+        setError(null);
+        setIsSelectorOpen(true);
+    }, []);
+
+    const closeSelector = useCallback(() => {
+        setIsSelectorOpen(false);
+    }, []);
+
+    /**
+     * Called when the user picks a wallet from the selector.
+     * If the wallet is not installed, the caller should open the install URL instead.
+     */
+    const connectWithWallet = useCallback(
+        async (walletId: string, walletType: WalletType) => {
+            setIsConnecting(true);
+            setError(null);
+
+            try {
+                StellarWalletsKit.setWallet(walletId);
+                const { address } = await StellarWalletsKit.fetchAddress();
+                if (!address) throw new Error('No address returned from wallet');
+
+                let network: 'testnet' | 'mainnet' = externalNetwork;
+                try {
+                    const { networkPassphrase } = await StellarWalletsKit.getNetwork();
+                    network = resolveNetworkFromPassphrase(networkPassphrase);
+                } catch {}
+
+                setWallet({ connected: true, address, network, walletType });
+                saveWalletState(address, network, walletType);
+
+                const { mismatch, message } = checkNetworkContractMismatch(
+                    STELLAR_CONFIG.factoryContractId,
+                    network,
+                    ACTIVE_NETWORK
+                );
+                setNetworkMismatchWarning(mismatch ? (message ?? null) : null);
+
+                try {
+                    analytics.track(AnalyticsEvent.WALLET_CONNECTED, { network, walletType });
+                } catch {}
+
+                setIsSelectorOpen(false);
+            } catch (err: any) {
+                setError(err?.message ?? 'Failed to connect wallet');
+            } finally {
+                setIsConnecting(false);
+            }
+        },
+        [externalNetwork]
+    );
+
+    /** Legacy direct-connect (falls back to Freighter for backwards compat) */
     const connect = useCallback(async () => {
         setIsConnecting(true);
         setError(null);
 
         try {
+            const freighterId = WALLET_ID_MAP['freighter'];
+            StellarWalletsKit.setWallet(freighterId);
+
+            // Freighter check via original WalletService (keeps existing UX for non-selector flow)
             const isInstalled = await WalletService.isInstalled();
             if (!isInstalled) {
                 throw new Error('Freighter wallet is not installed');
             }
 
-            const success = await updateWalletState();
-            if (!success) {
-                throw new Error('User rejected connection or account not found');
-            }
+            const { address } = await StellarWalletsKit.fetchAddress();
+            if (!address) throw new Error('User rejected connection or account not found');
+
+            const success = await updateWalletState('freighter');
+            if (!success) throw new Error('User rejected connection or account not found');
 
             try {
                 analytics.track('wallet_connect_initiated', { method: 'freighter' });
             } catch {}
-
-            setupListeners();
         } catch (err: any) {
             setError(err.message || 'Failed to connect wallet');
-            // Don't call disconnect() - we never connected, and it would clear the error
         } finally {
             setIsConnecting(false);
         }
-    }, [updateWalletState, setupListeners, disconnect]);
+    }, [updateWalletState]);
 
+    // Auto-reconnect on mount from persisted state
     useEffect(() => {
         if (isInitializedRef.current) return;
         isInitializedRef.current = true;
 
         const wasConnected = localStorage.getItem(WALLET_CONNECTED_KEY) === 'true';
-        if (wasConnected) {
-            // Optimistically restore persisted state so the UI is not blank during re-validation
-            const persisted = loadPersistedWalletState();
-            if (persisted) {
-                setWallet({ connected: true, address: persisted.address, network: persisted.network });
-            }
+        if (!wasConnected) return;
 
-            (async () => {
-                const isInstalled = await WalletService.isInstalled();
-                if (!isInstalled) {
-                    clearWalletState();
-                    setWallet((prev) => ({ connected: false, address: null, network: prev.network }));
-                    return;
-                }
-
-                const success = await updateWalletState();
-                if (success) {
-                    setupListeners();
-                } else {
-                    // Wallet revoked or address changed — clear persisted state
-                    clearWalletState();
-                }
-            })();
+        const persisted = loadPersistedWalletState();
+        if (persisted) {
+            setWallet({
+                connected: true,
+                address: persisted.address,
+                network: persisted.network,
+                walletType: persisted.walletType,
+            });
         }
 
-        return () => {
-            if (cleanupRef.current) {
-                cleanupRef.current();
-                cleanupRef.current = null;
+        (async () => {
+            if (persisted?.walletType) {
+                const id = WALLET_ID_MAP[persisted.walletType];
+                if (id) StellarWalletsKit.setWallet(id);
             }
-        };
-    }, [updateWalletState, setupListeners]);
+
+            const success = await updateWalletState(persisted?.walletType);
+            if (!success) {
+                clearWalletState();
+            }
+        })();
+    }, [updateWalletState]);
 
     return {
         wallet,
         connect,
+        connectWithWallet,
+        openSelector,
+        closeSelector,
+        isSelectorOpen,
         disconnect,
         isConnecting,
         error,

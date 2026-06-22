@@ -19,10 +19,13 @@ export interface DeploymentResult {
     metadataUrl?: string;
 }
 
+export type WalletType = 'freighter' | 'lobstr' | 'albedo' | 'xbull';
+
 export interface WalletState {
     connected: boolean;
     address: string | null;
     network: 'testnet' | 'mainnet';
+    walletType?: WalletType;
 }
 
 export interface TokenInfo {
