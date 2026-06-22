@@ -14,6 +14,7 @@ const LandingPage = lazy(() => import("./pages/LandingPage"));
 const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
 const CampaignDashboard = lazy(() => import("./app/dashboard/CampaignDashboard"));
+const GovernancePage = lazy(() => import("./pages/GovernancePage"));
 
 // Loading fallback
 function PageLoader() {
@@ -108,6 +109,20 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
           currentPath={pathname}
         >
           <RecurringPayments />
+        </DashboardLayout>
+      );
+    }
+
+    if (pathname === "/governance") {
+      return (
+        <DashboardLayout
+          wallet={wallet}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          isConnecting={isConnecting}
+          currentPath={pathname}
+        >
+          <GovernancePage wallet={wallet} />
         </DashboardLayout>
       );
     }
