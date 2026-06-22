@@ -8,6 +8,11 @@ import {
   tenantMiddleware,
   type TenantRequest,
 } from "../middleware/tenancy";
+import { successResponse, errorResponse } from "../utils/response";
+import {
+  batchDeployTokens,
+  type TokenDeployInput,
+} from "../services/batchTokenDeployService";
 
 const router = Router();
 
@@ -238,5 +243,109 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Batch token deployment
+// ---------------------------------------------------------------------------
+
+/** Maximum tokens allowed in a single batch request. */
+const BATCH_MAX_SIZE = 10;
+
+/**
+ * Per-token validation schema — mirrors the single-deploy validation rules so
+ * that each item in the batch is held to the same standard.
+ */
+const tokenDeployInputSchema = z.object({
+  creator: z
+    .string()
+    .min(1, "creator is required")
+    .max(64, "creator address too long"),
+  name: z
+    .string()
+    .min(1, "name is required")
+    .max(100, "name must be 100 characters or fewer"),
+  symbol: z
+    .string()
+    .min(1, "symbol is required")
+    .max(12, "symbol must be 12 characters or fewer")
+    .regex(/^[A-Z0-9]+$/, "symbol must be uppercase alphanumeric"),
+  decimals: z
+    .number()
+    .int("decimals must be an integer")
+    .min(0, "decimals must be >= 0")
+    .max(18, "decimals must be <= 18"),
+  initialSupply: z
+    .string()
+    .regex(/^\d+$/, "initialSupply must be a non-negative integer string"),
+  metadataUri: z
+    .string()
+    .url("metadataUri must be a valid URL")
+    .optional(),
+});
+
+const batchDeploySchema = z.object({
+  tokens: z
+    .array(tokenDeployInputSchema)
+    .min(1, "tokens array must contain at least one item")
+    .max(
+      BATCH_MAX_SIZE,
+      `tokens array must not exceed ${BATCH_MAX_SIZE} items`
+    ),
+});
+
+/**
+ * POST /api/tokens/batch
+ *
+ * Deploy up to 10 tokens in a single atomic operation.
+ *
+ * Request body: { tokens: TokenDeployInput[] }
+ * Response:     { success: true, data: BatchDeployResult }
+ *
+ * Atomicity: if any individual Stellar contract call fails the entire batch is
+ * aborted and no records are written to the database.
+ *
+ * Rate-limiting is inherited from the router-level tenantMiddleware.  Callers
+ * sending more than BATCH_MAX_SIZE tokens receive an immediate 400.
+ */
+router.post(
+  "/batch",
+  async (req: TenantRequest & Request, res: Response) => {
+    // Validate body
+    const parsed = batchDeploySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json(
+        errorResponse({
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.errors,
+        })
+      );
+    }
+
+    const { tokens } = parsed.data as { tokens: TokenDeployInput[] };
+
+    try {
+      const result = await batchDeployTokens(tokens);
+
+      // HTTP 207 Multi-Status: some items may have failed while others succeeded.
+      // We use 200 when all succeeded and 207 when results are mixed.
+      const hasFailures = result.failed.length > 0;
+      const hasSuccesses = result.succeeded.length > 0;
+      const statusCode = hasFailures && hasSuccesses ? 207 : hasFailures ? 422 : 200;
+
+      return res.status(statusCode).json(successResponse(result));
+    } catch (error) {
+      console.error("[tokens] POST /batch unhandled error:", error);
+      return res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_ERROR",
+          message: "Batch deployment failed",
+          details:
+            error instanceof Error ? error.message : "Unknown error",
+        })
+      );
+    }
+  }
+);
 
 export default router;

@@ -70,6 +70,22 @@ export interface TokenSearchResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Batch token deployment  –  POST /api/tokens/batch
+// ---------------------------------------------------------------------------
+
+/** Shape for the batch deploy endpoint request body. */
+export interface BatchDeployRequestBody {
+  tokens: import("../services/batchTokenDeployService").TokenDeployInput[];
+}
+
+/** Shape returned by POST /api/tokens/batch. */
+export interface BatchDeployResponse {
+  success: boolean;
+  data: import("../services/batchTokenDeployService").BatchDeployResult;
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
 // Campaigns  –  /api/campaigns
 // ---------------------------------------------------------------------------
 
