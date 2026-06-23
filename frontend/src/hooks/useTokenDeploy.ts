@@ -37,6 +37,7 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
     const [retryCount, setRetryCount] = useState(0);
     const [lastParams, setLastParams] = useState<TokenDeployParams | null>(null);
     const [uploadedMetadataUri, setUploadedMetadataUri] = useState<string | null>(null);
+    const [feeBumpAvailable, setFeeBumpAvailable] = useState<boolean>(false);
 
     const stellarService = useMemo(() => new StellarService(network), [network]);
     const ipfsService = useMemo(() => new IPFSService(), []);
@@ -158,7 +159,19 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
         }
 
         setStatus('deploying');
-        
+
+        // Check fee-bump availability for low-balance users (non-fatal)
+        try {
+            const apiBase = network === 'testnet' ? 'http://localhost:3001' : '';
+            const feeResp = await fetch(`${apiBase}/api/stellar/fee-estimate`);
+            if (feeResp.ok) {
+                const feeData = await feeResp.json();
+                setFeeBumpAvailable(feeData.data?.feeBumpAvailable ?? false);
+            }
+        } catch {
+            // Non-fatal: fee-bump check failure does not block deployment
+        }
+
         // Check if factory is paused before attempting deployment
         try {
             const isPaused = await stellarService.isPaused();
@@ -297,6 +310,7 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
         error,
         retryCount,
         canRetry: retryCount < maxRetries && lastParams !== null && status === 'error',
+        feeBumpAvailable,
     };
 }
 
