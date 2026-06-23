@@ -59,6 +59,7 @@ model BurnRecord {
 
 model BuybackCampaign {
   id             Int            @id @default(autoincrement())
+  tenantId       String?
   tokenAddress   String
   totalAmount    String
   executedAmount String         @default("0")
@@ -73,6 +74,7 @@ model BuybackCampaign {
   @@index([status])
   @@index([tokenAddress])
   @@index([createdAt])
+  @@index([tenantId])
 }
 
 model BuybackStep {
@@ -125,6 +127,7 @@ model Analytics {
 /// A dividend pool funded by a token creator/admin for distribution to holders.
 model DividendPool {
   id             String             @id @default(uuid())
+  tenantId       String?
   tokenId        String
   /// Stellar address of the account that funded this pool
   fundedBy       String
@@ -151,6 +154,7 @@ model DividendPool {
   @@index([fundedBy])
   @@index([status])
   @@index([createdAt])
+  @@index([tenantId])
 }
 
 enum DividendPoolStatus {
@@ -198,11 +202,13 @@ model DividendClaim {
 
 model WebhookSubscription {
   id          String   @id @default(uuid())
+  tenantId    String?
   userAddress String
   endpoint    String   @unique
   createdAt   DateTime @default(now())
 
   @@index([userAddress])
+  @@index([tenantId])
 }
 
 model Stream {
