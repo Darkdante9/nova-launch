@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AppError, DeploymentResult, DeploymentStatus, TokenDeployParams, TokenInfo, WalletState } from '../types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { AppError, ConfirmationStep, ConfirmationStepResponse, DeploymentResult, DeploymentStatus, TokenDeployParams, TokenInfo, WalletState } from '../types';
 import { ErrorCode } from '../types';
 import { createError, ErrorHandler, getErrorMessage } from '../utils/errors';
 import {
@@ -13,6 +13,8 @@ import { TransactionHistoryStorage, transactionHistoryStorage } from '../service
 import { getDeploymentFeeBreakdown } from '../utils/feeCalculation';
 import { analytics, AnalyticsEvent } from '../services/analytics';
 import { useAnalytics } from './useAnalytics';
+import { getConfirmationStep } from '../services/deploymentStatusApi';
+import { DeploymentRecoveryStorage } from '../services/DeploymentRecoveryStorage';
 
 const STATUS_MESSAGES: Record<DeploymentStatus, string> = {
     idle: '',
@@ -38,10 +40,85 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
     const [lastParams, setLastParams] = useState<TokenDeployParams | null>(null);
     const [uploadedMetadataUri, setUploadedMetadataUri] = useState<string | null>(null);
     const [feeBumpAvailable, setFeeBumpAvailable] = useState<boolean>(false);
+    const [confirmationStep, setConfirmationStep] = useState<ConfirmationStep | null>(null);
+    const [confirmations, setConfirmations] = useState<{ current: number; total: number } | null>(null);
+    const pollingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pollingStartRef = useRef<number | null>(null);
+    const pollingTxHashRef = useRef<string | null>(null);
 
     const stellarService = useMemo(() => new StellarService(network), [network]);
     const ipfsService = useMemo(() => new IPFSService(), []);
     const { trackTokenDeployed, trackTokenDeployFailed } = useAnalytics();
+
+    // Stop polling when component unmounts or txHash changes
+    useEffect(() => {
+        return () => {
+            if (pollingRef.current) {
+                clearTimeout(pollingRef.current);
+                pollingRef.current = null;
+            }
+        };
+    }, []);
+
+    function stopPolling() {
+        if (pollingRef.current) {
+            clearTimeout(pollingRef.current);
+            pollingRef.current = null;
+        }
+        pollingStartRef.current = null;
+        pollingTxHashRef.current = null;
+    }
+
+    function scheduleNextPoll(txHash: string, pollFn: () => void, attempt: number) {
+        // 2s base interval; after 60s switch to exponential backoff capped at 30s
+        const elapsed = pollingStartRef.current ? Date.now() - pollingStartRef.current : 0;
+        let interval: number;
+        if (elapsed < 60_000) {
+            interval = 2_000;
+        } else {
+            interval = Math.min(2_000 * Math.pow(1.5, attempt - 30), 30_000);
+        }
+        pollingRef.current = setTimeout(pollFn, interval);
+    }
+
+    function startPolling(txHash: string, network: 'testnet' | 'mainnet') {
+        stopPolling();
+        pollingStartRef.current = Date.now();
+        pollingTxHashRef.current = txHash;
+        setConfirmationStep('submitted');
+        setConfirmations(null);
+
+        let attempt = 0;
+
+        const poll = async () => {
+            // Guard: only poll for the current txHash
+            if (pollingTxHashRef.current !== txHash) return;
+
+            attempt++;
+            try {
+                const result: ConfirmationStepResponse = await getConfirmationStep(txHash, network);
+                if (pollingTxHashRef.current !== txHash) return; // stale
+
+                setConfirmationStep(result.step);
+                if (result.confirmations !== undefined) {
+                    setConfirmations({ current: result.confirmations, total: result.totalConfirmations });
+                }
+
+                if (result.step === 'finalized') {
+                    stopPolling();
+                    return;
+                }
+
+                scheduleNextPoll(txHash, poll, attempt);
+            } catch {
+                if (pollingTxHashRef.current !== txHash) return;
+                // On error, keep polling with backoff
+                scheduleNextPoll(txHash, poll, attempt);
+            }
+        };
+
+        poll();
+    }
 
     useEffect(() => {
         if ((status === 'uploading' || status === 'deploying') && lastParams) {
@@ -222,6 +299,9 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
               checkpoint.feePaidXlm = String(feeBreakdown.totalFee);
               DeploymentRecoveryStorage.saveCheckpoint(checkpoint);
             }
+
+            // Start progressive confirmation polling
+            startPolling(serviceResult.transactionHash, network);
             
             try {
                 analytics.track(AnalyticsEvent.TOKEN_DEPLOYED, {
@@ -268,10 +348,13 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
     };
 
     const reset = () => {
+        stopPolling();
         setStatus('idle');
         setError(null);
         setRetryCount(0);
         setLastParams(null);
+        setConfirmationStep(null);
+        setConfirmations(null);
     };
 
     const retry = async (): Promise<DeploymentResult | null> => {
@@ -311,6 +394,8 @@ export function useTokenDeploy(wallet: WalletState, options: UseTokenDeployOptio
         retryCount,
         canRetry: retryCount < maxRetries && lastParams !== null && status === 'error',
         feeBumpAvailable,
+        confirmationStep,
+        confirmations,
     };
 }
 

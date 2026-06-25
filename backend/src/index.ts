@@ -21,7 +21,7 @@ import versionRoutes from "./routes/version";
 import searchRoutes from "./routes/search";
 import exportRoutes from "./routes/export";
 import stellarRoutes from "./routes/stellar";
-import eventsRoutes from "./routes/events";
+import deployStatusRoutes from "./routes/deployStatus";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
@@ -112,7 +112,7 @@ v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
 v1Router.use("/stellar", limiter, stellarRoutes);
-v1Router.use("/events", eventsRoutes);
+v1Router.use("/deploy", limiter, deployStatusRoutes);
 v1Router.use("/graphql", graphqlRouter);
 v1Router.use("/docs", openApiRouter);
 

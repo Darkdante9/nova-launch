@@ -106,6 +106,18 @@ export interface DeploymentStatusResponse {
   reason?: string; // Stellar error code/reason if failed
 }
 
+// Progressive confirmation step types
+export type ConfirmationStep = 'submitted' | 'pending' | 'confirming' | 'finalized';
+
+export interface ConfirmationStepResponse {
+  txHash: string;
+  step: ConfirmationStep;
+  confirmations?: number;
+  totalConfirmations: number;
+  ledger?: number;
+  reason?: string;
+}
+
 // Burn Types
 export interface BurnTokenParams {
     tokenAddress: string;
