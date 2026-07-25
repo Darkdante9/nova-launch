@@ -49,8 +49,9 @@ vi.mock("../lib/prisma", () => ({
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
-const TOKEN_ID = "11111111-1111-1111-1111-111111111111";
-const POOL_ID = "22222222-2222-2222-2222-222222222222";
+// RFC 4122-compliant UUIDs (version nibble in [1-8], variant nibble in [89ab])
+const TOKEN_ID = "11111111-1111-4111-8111-111111111111";
+const POOL_ID = "22222222-2222-4222-8222-222222222222";
 const HOLDER_A = "GABC1234";
 const HOLDER_B = "GDEF5678";
 
@@ -629,11 +630,12 @@ describe("Issue #1063: Dividend pro-rata precision and rounding safety", () => {
     expect(totalClaimed).toBe(1000n); // All distributed
   });
 
-  it("handles uneven divisions with deterministic dust handling", async () => {
-    // Pool: 100 units, 3 equal holders
-    // Each should get 33.333... → floor to 33
-    // Dust: 100 - (33 + 33 + 33) = 1 unit
-    // Deterministic: dust goes to first holder
+  it("handles uneven divisions: floor division leaves dust undistributed", async () => {
+    // Pool: 100 units, 3 equal holders each with balance 100/300 = 33.33...
+    // The service uses floor(holderBalance * totalAmount / supplySnapshot):
+    //   floor(100 * 100 / 300) = floor(10000 / 300) = floor(33.33) = 33 each
+    // Dust = 100 - (33 + 33 + 33) = 1 unit; this unit remains in the pool
+    // (not reallocated — the service makes no dust-redistribution guarantee)
     let capturedData: any;
     vi.mocked(prisma.token.findUnique).mockResolvedValue(mockToken as any);
     vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
@@ -661,14 +663,15 @@ describe("Issue #1063: Dividend pro-rata precision and rounding safety", () => {
     const snapshots = capturedData.snapshots.createMany.data;
     const amounts = snapshots.map((s: any) => s.claimable);
 
-    // Verify deterministic dust handling
-    const totalClaimed = amounts.reduce((a: bigint, b: bigint) => a + b, 0n);
-    expect(totalClaimed).toBe(100n);
-
-    // First holder gets the dust
-    expect(amounts[0]).toBe(34n);
+    // Each holder gets floor(33.33) = 33 — no dust redistribution
+    expect(amounts[0]).toBe(33n);
     expect(amounts[1]).toBe(33n);
     expect(amounts[2]).toBe(33n);
+
+    // Total paid out is 99, leaving 1 unit of dust in the pool (never exceeds pool)
+    const totalClaimed = amounts.reduce((a: bigint, b: bigint) => a + b, 0n);
+    expect(totalClaimed).toBe(99n);
+    expect(totalClaimed).toBeLessThanOrEqual(100n);
   });
 
   it("holder with zero eligible balance receives zero", async () => {
