@@ -214,6 +214,16 @@ pub struct TimelockDelayConfig {
 /// Governance configuration
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Configuration for governance voting thresholds
+///
+/// Defines the quorum and approval requirements for all governance proposals.
+///
+/// # Fields
+/// * `quorum_percent` - Minimum participation percentage required (0-100)
+/// * `approval_percent` - Minimum approval percentage required (0-100)
+/// * `voting_period` - Duration in seconds that voting remains open after proposal creation
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GovernanceConfig {
     pub quorum_percent: u32,
     pub approval_percent: u32,
@@ -939,6 +949,18 @@ pub enum ProposalPriority {
 /// Entry in the priority execution queue
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Entry in the proposal execution queue
+///
+/// Represents a proposal that is queued for execution after timelock expires.
+/// Entries are sorted by priority (descending) and enqueue time (ascending, FIFO).
+///
+/// # Fields
+/// * `proposal_id` - ID of the queued proposal
+/// * `priority` - Execution priority (higher values execute first)
+/// * `enqueued_at` - Ledger timestamp when entry was added to queue
+/// * `eta` - Earliest timestamp when proposal can be executed (timelock expiry)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueEntry {
     pub proposal_id: u64,
     pub priority: ProposalPriority,
@@ -1191,6 +1213,23 @@ pub enum VoteChoice {
     Abstain,
 }
 
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// State transitions for a governance proposal lifecycle
+///
+/// A proposal moves through these states: Created → Active → Succeeded/Defeated
+/// → Queued → Executed/Cancelled, with Expired/Failed as terminal states.
+///
+/// # Variants
+/// * `Created` - Proposal just created, voting not yet started
+/// * `Active` - Voting period is active
+/// * `Succeeded` - Voting ended with approval threshold met and quorum satisfied
+/// * `Defeated` - Voting ended without meeting approval or quorum requirements
+/// * `Queued` - Succeeded proposal queued for execution after timelock
+/// * `Executed` - Proposal executed successfully
+/// * `Cancelled` - Proposal cancelled before execution
+/// * `Expired` - Proposal never executed before expiration timestamp
+/// * `Failed` - Proposal execution failed (execution reverted)
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProposalState {

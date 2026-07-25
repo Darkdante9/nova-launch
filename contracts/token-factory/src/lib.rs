@@ -4528,6 +4528,8 @@ mod gas_benchmark_comprehensive;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_gas_regression_test: () = ();
 #[cfg(test)]
+mod gas_benchmark_proposal_queue;
+#[cfg(test)]
 // mod gas_compute_thresholds;
 
 #[cfg(all(test, feature = "legacy-tests"))]
