@@ -189,6 +189,13 @@ export class StellarEventListener {
         if (isTransient) {
           const { delayMs, attempt } = backoff.recordFailure();
 
+          if (attempt > LISTENER_RECONNECT_CONFIG.maxRetries) {
+            console.error(
+              `[StellarEventListener] ${attempt} consecutive failures — max retries exhausted. Surfacing terminal error.`,
+            );
+            throw new Error(`Max retries exhausted after ${attempt} attempts`);
+          }
+
           if (attempt > 5) {
             console.error(
               `[StellarEventListener] ${attempt} consecutive failures — continuing with extended backoff`,
