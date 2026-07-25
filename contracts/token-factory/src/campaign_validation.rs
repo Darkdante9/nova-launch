@@ -34,6 +34,10 @@ pub mod constants {
 
     /// Minimum time buffer for start time (1 minute from now)
     pub const MIN_START_BUFFER: u64 = 60;
+
+    /// Maximum allowed byte length for a metadata URI (e.g. IPFS / HTTPS URL).
+    /// Mirrors the limit enforced in the campaign creation path.
+    pub const MAX_METADATA_URI_LEN: u32 = 256;
 }
 
 /// Validate campaign budget
@@ -161,6 +165,31 @@ pub fn validate_token_pair(source_token: &Address, target_token: &Address) -> Re
         return Err(Error::InvalidParameters);
     }
 
+    Ok(())
+}
+
+/// Validate campaign metadata URI
+///
+/// Ensures the optional metadata URI attached to a campaign (e.g. an IPFS
+/// content identifier or HTTPS URL) does not exceed the on-chain storage
+/// budget.  An empty string is **not** a valid URI; callers that want to
+/// skip metadata should pass `None` rather than `""`.
+///
+/// # Arguments
+/// * `uri_len` - Byte length of the metadata URI (`soroban_sdk::String::len()`)
+///
+/// # Returns
+/// * `Ok(())` if the URI length is within bounds
+/// * `Err(Error::InvalidParameters)` if the URI is empty or longer than
+///   [`constants::MAX_METADATA_URI_LEN`]
+///
+/// # Validation Rules
+/// - Length must be > 0 (non-empty)
+/// - Length must be <= MAX_METADATA_URI_LEN
+pub fn validate_metadata_uri(uri_len: u32) -> Result<(), Error> {
+    if uri_len == 0 || uri_len > constants::MAX_METADATA_URI_LEN {
+        return Err(Error::InvalidParameters);
+    }
     Ok(())
 }
 
