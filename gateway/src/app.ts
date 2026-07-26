@@ -20,6 +20,7 @@ import Redis from "ioredis";
 
 import { GatewayEnv } from "./config";
 import { createAuthMiddleware } from "./auth";
+import { createIdempotencyMiddleware } from "./idempotency";
 import { createRateLimiter, createRedisClient } from "./rateLimiter";
 import { ROUTES, RATE_LIMIT_TIERS, RateLimitTier } from "./routes";
 
@@ -58,6 +59,9 @@ export function createApp({ env, redis: injectedRedis }: GatewayDeps) {
 
   // ── Authentication ───────────────────────────────────────────────────────────
   app.use(createAuthMiddleware(env.JWT_SECRET));
+
+  // ── Idempotency key propagation ──────────────────────────────────────────────
+  app.use(createIdempotencyMiddleware());
 
   // ── Rate limiting + proxy per route ─────────────────────────────────────────
   const redis = injectedRedis ?? createRedisClient(env.REDIS_URL);
