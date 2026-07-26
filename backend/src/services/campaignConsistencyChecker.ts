@@ -48,12 +48,62 @@ export interface ConsistencyCheckResult {
 }
 
 /**
+ * Options for a single-campaign consistency check
+ * @interface CheckCampaignOptions
+ */
+export interface CheckCampaignOptions {
+  /**
+   * Set of in-flight transaction hashes (not yet confirmed on-chain) that are
+   * known to be pending for this campaign. When provided, the checker will skip
+   * reporting a `currentAmount` divergence whose magnitude is fully explained by
+   * the sum of pending amounts in these transactions, preventing false-positive
+   * drift alerts while a transaction is still propagating through the network.
+   *
+   * @example
+   * // A payment of 50_000 stroops is in-flight; suppress its apparent drift:
+   * checker.checkCampaign(1, onChainState, {
+   *   inFlightTxHashes: new Set(['abc123', 'def456']),
+   *   inFlightAmountDelta: BigInt(50_000),
+   * });
+   */
+  inFlightTxHashes?: Set<string>;
+  /**
+   * The total amount that in-flight transactions are expected to add to
+   * `currentAmount` once they are confirmed. If the difference between the
+   * on-chain value and the backend value equals this delta, the diff is
+   * considered in-flight and is suppressed.
+   */
+  inFlightAmountDelta?: bigint;
+}
+
+/**
+ * Options for a batch consistency check
+ * @interface CheckMultipleCampaignsOptions
+ */
+export interface CheckMultipleCampaignsOptions {
+  /**
+   * Per-campaign in-flight options keyed by campaignId.
+   * Campaigns whose IDs are absent from this map are checked without any
+   * in-flight suppression.
+   */
+  inFlight?: Map<number, CheckCampaignOptions>;
+}
+
+/**
  * CampaignConsistencyChecker - Verifies consistency between backend database and on-chain state
- * 
+ *
  * This service compares campaign data stored in the backend database with the actual
  * on-chain state retrieved from the blockchain. It detects any discrepancies that may
  * indicate data synchronization issues, bugs, or potential security concerns.
- * 
+ *
+ * ### In-flight transaction guard
+ * When a Stellar transaction has been submitted but not yet reflected in the Postgres
+ * projection, the checker would normally flag a `currentAmount` divergence as drift.
+ * Pass `inFlightTxHashes` and `inFlightAmountDelta` to suppress that false positive:
+ * the checker will skip the `currentAmount` diff if the on-chain amount exceeds the
+ * backend amount by exactly `inFlightAmountDelta` (i.e. the gap is fully explained by
+ * the pending transaction).
+ *
  * @class CampaignConsistencyChecker
  * @example
  * ```typescript
@@ -66,34 +116,26 @@ export interface ConsistencyCheckResult {
  */
 export class CampaignConsistencyChecker {
   /**
-   * Checks a single campaign for consistency between backend and on-chain state
-   * 
+   * Checks a single campaign for consistency between backend and on-chain state.
+   *
    * Compares the backend database record with the on-chain state and returns
    * an array of differences found. If the campaign doesn't exist in the backend,
    * returns a single diff indicating the missing campaign.
-   * 
+   *
+   * Pass `options.inFlightTxHashes` + `options.inFlightAmountDelta` to suppress a
+   * `currentAmount` divergence that is fully explained by pending (not-yet-confirmed)
+   * transactions. This avoids false-positive alerts during the propagation window
+   * between a transaction being submitted and the projection being updated.
+   *
    * @param campaignId - The unique identifier of the campaign to check
    * @param onChainState - The current on-chain state of the campaign
+   * @param options - Optional in-flight transaction context
    * @returns Array of ConsistencyDiff objects representing found discrepancies
-   * 
-   * @example
-   * ```typescript
-   * const diffs = await checker.checkCampaign(1, {
-   *   campaignId: 1,
-   *   status: 'ACTIVE',
-   *   currentAmount: BigInt(100000),
-   *   executionCount: 2,
-   *   targetAmount: BigInt(1000000)
-   * });
-   * 
-   * if (diffs.length > 0) {
-   *   console.log('Inconsistencies found:', diffs);
-   * }
-   * ```
    */
   async checkCampaign(
     campaignId: number,
-    onChainState: OnChainCampaignState
+    onChainState: OnChainCampaignState,
+    options: CheckCampaignOptions = {}
   ): Promise<ConsistencyDiff[]> {
     const backendCampaign = await prisma.campaign.findUnique({
       where: { campaignId },
@@ -122,12 +164,22 @@ export class CampaignConsistencyChecker {
     }
 
     if (backendCampaign.currentAmount !== onChainState.currentAmount) {
-      diffs.push({
-        campaignId,
-        field: "currentAmount",
-        backendValue: backendCampaign.currentAmount.toString(),
-        onChainValue: onChainState.currentAmount.toString(),
-      });
+      // Suppress the diff when all of the observed divergence is accounted for
+      // by in-flight transactions that have not yet been projected into Postgres.
+      const shouldSuppress = this._isCurrentAmountDivergenceInFlight(
+        backendCampaign.currentAmount,
+        onChainState.currentAmount,
+        options
+      );
+
+      if (!shouldSuppress) {
+        diffs.push({
+          campaignId,
+          field: "currentAmount",
+          backendValue: backendCampaign.currentAmount.toString(),
+          onChainValue: onChainState.currentAmount.toString(),
+        });
+      }
     }
 
     if (backendCampaign.executionCount !== onChainState.executionCount) {
@@ -152,36 +204,62 @@ export class CampaignConsistencyChecker {
   }
 
   /**
-   * Checks multiple campaigns for consistency in a single batch operation
-   * 
+   * Returns true when the `currentAmount` gap is fully explained by in-flight
+   * (not-yet-confirmed) transactions, meaning the divergence should NOT be
+   * reported as real drift.
+   *
+   * Conditions for suppression (all must hold):
+   *  1. At least one in-flight tx hash is provided.
+   *  2. An `inFlightAmountDelta` is provided.
+   *  3. The on-chain amount is greater than the backend amount (chain is ahead).
+   *  4. The difference equals `inFlightAmountDelta` exactly.
+   */
+  private _isCurrentAmountDivergenceInFlight(
+    backendAmount: bigint,
+    onChainAmount: bigint,
+    options: CheckCampaignOptions
+  ): boolean {
+    const { inFlightTxHashes, inFlightAmountDelta } = options;
+
+    if (
+      !inFlightTxHashes ||
+      inFlightTxHashes.size === 0 ||
+      inFlightAmountDelta === undefined ||
+      inFlightAmountDelta <= BigInt(0)
+    ) {
+      return false;
+    }
+
+    // Only suppress when the chain is ahead of the projection by exactly the
+    // pending delta (i.e. the projection has not yet processed the tx).
+    const delta = onChainAmount - backendAmount;
+    return delta === inFlightAmountDelta;
+  }
+
+  /**
+   * Checks multiple campaigns for consistency in a single batch operation.
+   *
    * Iterates through an array of on-chain states and checks each campaign
    * for consistency. Aggregates all differences found across all campaigns
    * into a single result object.
-   * 
+   *
    * @param onChainStates - Array of on-chain states to check
+   * @param options - Optional batch-level in-flight context, keyed by campaignId
    * @returns ConsistencyCheckResult object with overall consistency status and all diffs
-   * 
-   * @example
-   * ```typescript
-   * const result = await checker.checkMultipleCampaigns([
-   *   { campaignId: 1, status: 'ACTIVE', currentAmount: BigInt(100000), executionCount: 2, targetAmount: BigInt(1000000) },
-   *   { campaignId: 2, status: 'PAUSED', currentAmount: BigInt(50000), executionCount: 1, targetAmount: BigInt(500000) }
-   * ]);
-   * 
-   * if (!result.consistent) {
-   *   console.log(`Found ${result.diffs.length} inconsistencies across ${result.totalChecked} campaigns`);
-   * }
-   * ```
    */
   async checkMultipleCampaigns(
-    onChainStates: OnChainCampaignState[]
+    onChainStates: OnChainCampaignState[],
+    options: CheckMultipleCampaignsOptions = {}
   ): Promise<ConsistencyCheckResult> {
     const allDiffs: ConsistencyDiff[] = [];
 
     for (const onChainState of onChainStates) {
+      const perCampaignOptions =
+        options.inFlight?.get(onChainState.campaignId) ?? {};
       const diffs = await this.checkCampaign(
         onChainState.campaignId,
-        onChainState
+        onChainState,
+        perCampaignOptions
       );
       allDiffs.push(...diffs);
     }
@@ -194,31 +272,14 @@ export class CampaignConsistencyChecker {
   }
 
   /**
-   * Formats consistency diffs into a human-readable string representation
-   * 
+   * Formats consistency diffs into a human-readable string representation.
+   *
    * Converts an array of ConsistencyDiff objects into a formatted string
    * suitable for logging, reporting, or display purposes. Uses emoji
    * indicators for quick visual identification of consistency status.
-   * 
+   *
    * @param diffs - Array of ConsistencyDiff objects to format
    * @returns Formatted string with consistency check results
-   * 
-   * @example
-   * ```typescript
-   * const diffs = await checker.checkCampaign(1, onChainState);
-   * const report = checker.formatDiffs(diffs);
-   * console.log(report);
-   * // Output:
-   * // ❌ Found 2 inconsistencies:
-   * // 
-   * // Campaign 1 - status:
-   * //   Backend:  ACTIVE
-   * //   On-chain: PAUSED
-   * // 
-   * // Campaign 1 - currentAmount:
-   * //   Backend:  100000
-   * //   On-chain: 150000
-   * ```
    */
   formatDiffs(diffs: ConsistencyDiff[]): string {
     if (diffs.length === 0) {
