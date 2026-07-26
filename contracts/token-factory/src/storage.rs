@@ -1568,6 +1568,50 @@ pub fn get_valid_proof(env: &Env, milestone_hash: &soroban_sdk::BytesN<32>) -> O
         .get(&key)
 }
 
+/// Register an authorized oracle for milestone verification
+pub fn set_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .set(&key, &true);
+}
+
+/// Check if an oracle is authorized for milestone verification
+pub fn get_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) -> Option<bool> {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .get(&key)
+}
+
+/// Remove an oracle from the authorized list
+pub fn remove_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .remove(&key);
+}
+
+/// Mark that the contract-wide milestone verifier has been configured
+pub fn set_verifier_configured(env: &Env, configured: bool) {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, "verifier_configured"), &configured);
+}
+
+/// Check if the contract-wide milestone verifier has been configured
+pub fn is_verifier_configured(env: &Env) -> bool {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .get::<_, bool>(&Symbol::new(env, "verifier_configured"))
+        .unwrap_or(false)
+}
+
 // ============================================================
 // Storage Functions - Campaign Management
 // ============================================================

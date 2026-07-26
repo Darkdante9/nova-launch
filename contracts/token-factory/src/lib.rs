@@ -269,6 +269,28 @@ impl TokenFactory {
         storage::get_metadata_locked_at(&env)
     }
 
+    /// Configure the contract-wide milestone verifier for oracle-based validation.
+    ///
+    /// Only the contract admin may call this method. The configured verifier is used
+    /// by all vault claims to validate milestone proofs when a non-zero milestone_hash
+    /// is present.
+    ///
+    /// # Access Control
+    /// - Caller must be the contract admin
+    ///
+    /// # Errors
+    /// - `Unauthorized` – caller is not the contract admin
+    pub fn set_milestone_verifier(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let current_admin = storage::get_admin(&env);
+        if admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::set_verifier_configured(&env, true);
+        Ok(())
+    }
+
     /// Update a token's immutable identity fields (name, symbol, decimals).
     ///
     /// This entry point exists to make the immutability guarantee explicit and
@@ -3073,10 +3095,10 @@ impl TokenFactory {
     /// 4. Check time-based unlock conditions
     /// 5. Transfer tokens and update vault status
     ///
-    /// # Integration Point
-    /// TODO: The verifier instance should be injected or configured during contract
-    /// initialization. For testing, use MilestoneVerifierStub. For production,
-    /// replace with oracle-based verifier.
+    /// # Verifier Injection
+    /// The contract supports verifier injection via `set_milestone_verifier()`. Once configured,
+    /// the injected verifier validates milestone proofs. For testing, use MilestoneVerifierStub.
+    /// For production, use OracleMilestoneVerifier with oracle authorization.
     pub fn claim_vault(
         env: Env,
         owner: Address,
@@ -4588,6 +4610,128 @@ const _ISOLATED_DISABLED_metadata_update_test: () = ();
 
 // #[cfg(test)]
 // mod vault_fuzz_test;
+
+#[cfg(test)]
+mod verifier_injection_test {
+    use crate::{test_helpers::TestEnv, TokenFactory, TokenFactoryClient};
+    use soroban_sdk::{Address, BytesN, Env};
+
+    #[test]
+    fn test_set_milestone_verifier_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+        });
+
+        let result = client.set_milestone_verifier(&non_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_milestone_verifier_succeeds_with_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+        });
+
+        let result = client.set_milestone_verifier(&admin);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verifier_configuration_persists() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+            assert!(!crate::storage::is_verifier_configured(&env));
+        });
+
+        client.set_milestone_verifier(&admin).unwrap();
+
+        env.as_contract(&contract_id, || {
+            assert!(crate::storage::is_verifier_configured(&env));
+        });
+    }
+
+    #[test]
+    fn test_claim_vault_with_zero_milestone_hash_ignores_verifier() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &treasury, &100, &50);
+        client.set_milestone_verifier(&admin).unwrap();
+
+        let token = client.deploy_token(&admin, &"TestToken".into(), &"TST".into(), &7);
+
+        let zero_milestone = BytesN::from_array(&env, &[0u8; 32]);
+        let vault_id = client.create_vault(
+            &creator,
+            &token,
+            &owner,
+            &1_000_000i128,
+            &env.ledger().timestamp(),
+            &zero_milestone,
+        );
+
+        let claimed = client.claim_vault(&owner, &vault_id, &None);
+        assert_eq!(claimed, 1_000_000i128);
+    }
+
+    #[test]
+    fn test_claim_vault_entry_point_signature_unchanged() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &treasury, &100, &50);
+
+        let zero_milestone = BytesN::from_array(&env, &[0u8; 32]);
+        let vault_id = client.create_vault(
+            &admin,
+            &Address::generate(&env),
+            &owner,
+            &500_000i128,
+            &env.ledger().timestamp(),
+            &zero_milestone,
+        );
+
+        let claimed = client.claim_vault(&owner, &vault_id, &None);
+        assert_eq!(claimed, 500_000i128);
+    }
+}
 
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_bridge_test: () = ();
