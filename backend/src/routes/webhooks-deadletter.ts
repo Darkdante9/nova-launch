@@ -53,7 +53,7 @@ router.get(
             code: "VALIDATION_ERROR",
             message: "Invalid query parameters",
             details: parsed.error.errors,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -73,7 +73,7 @@ router.get(
             limit,
             total,
           },
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error listing dead-letter entries:", error);
@@ -81,7 +81,7 @@ router.get(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to list dead-letter entries",
-        })
+        }, req.correlationId)
       );
     }
   }
@@ -107,7 +107,7 @@ router.post(
           errorResponse({
             code: "NOT_FOUND",
             message: "Dead-letter entry not found",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -116,7 +116,7 @@ router.post(
           errorResponse({
             code: "ALREADY_RESOLVED",
             message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -128,7 +128,7 @@ router.post(
           errorResponse({
             code: "SUBSCRIPTION_NOT_FOUND",
             message: "Associated webhook subscription no longer exists",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -151,7 +151,7 @@ router.post(
         successResponse({
           message: "Dead-letter entry re-enqueued for delivery",
           id,
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error retrying dead-letter entry:", error);
@@ -159,7 +159,7 @@ router.post(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to retry dead-letter entry",
-        })
+        }, req.correlationId)
       );
     }
   }
@@ -184,7 +184,7 @@ router.post(
           errorResponse({
             code: "NOT_FOUND",
             message: "Dead-letter entry not found",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -193,7 +193,7 @@ router.post(
           errorResponse({
             code: "ALREADY_RESOLVED",
             message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -205,7 +205,7 @@ router.post(
             message: "Dead-letter entry requeued for delivery",
             id,
             requeueCount: requeued.requeueCount,
-          })
+          }, req.correlationId)
         );
       } catch (error: any) {
         if (error.name === "PoisonMessageError") {
@@ -214,7 +214,7 @@ router.post(
               code: "POISON_MESSAGE",
               message: "Dead-letter entry has exceeded the maximum requeue limit",
               details: { requeueCount: deadLetter.requeueCount },
-            })
+            }, req.correlationId)
           );
         }
         throw error;
@@ -225,7 +225,7 @@ router.post(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to requeue dead-letter entry",
-        })
+        }, req.correlationId)
       );
     }
   }
@@ -249,7 +249,7 @@ router.delete(
           errorResponse({
             code: "NOT_FOUND",
             message: "Dead-letter entry not found",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -258,7 +258,7 @@ router.delete(
           errorResponse({
             code: "ALREADY_RESOLVED",
             message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -268,7 +268,7 @@ router.delete(
         successResponse({
           message: "Dead-letter entry discarded",
           id,
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error discarding dead-letter entry:", error);
@@ -276,7 +276,7 @@ router.delete(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to discard dead-letter entry",
-        })
+        }, req.correlationId)
       );
     }
   }
