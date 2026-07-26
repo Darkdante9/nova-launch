@@ -490,7 +490,64 @@ describe("batchDeployTokens — Stellar-level partial failure scenarios", () => 
     });
   });
 
-  // ── 6. Edge cases ─────────────────────────────────────────────────────────
+  // ── 6. Retry-aware failure handling ──────────────────────────────────────
+
+  describe("transient vs terminal RPC failure distinction", () => {
+    it("preserves per-item status for timeout (transient) failures", async () => {
+      const inputs = [makeInput("T1"), makeInput("T2")];
+
+      mockCallStellarDeploy
+        .mockResolvedValueOnce({ address: STELLAR_ADDRS[0] })
+        .mockRejectedValueOnce(new Error("TIMEOUT: Request timed out after 30s"));
+
+      const result = await batchDeployTokens(inputs);
+
+      expect(result.failed).toHaveLength(2);
+      const timedOut = result.failed.find((f) => f.input.symbol === "T2");
+      expect(timedOut?.error).toContain("TIMEOUT");
+    });
+
+    it("preserves per-item status for rate-limit (transient) failures", async () => {
+      const inputs = [makeInput("RL1"), makeInput("RL2"), makeInput("RL3")];
+
+      mockCallStellarDeploy
+        .mockResolvedValueOnce({ address: STELLAR_ADDRS[0] })
+        .mockResolvedValueOnce({ address: STELLAR_ADDRS[1] })
+        .mockRejectedValueOnce(new Error("RATE_LIMITED: Too many requests"));
+
+      const result = await batchDeployTokens(inputs);
+
+      const rateLimited = result.failed.find((f) => f.input.symbol === "RL2");
+      expect(rateLimited?.error).toContain("RATE_LIMITED");
+    });
+
+    it("distinguishes contract panic (terminal) from timeout (transient)", async () => {
+      const inputs = [makeInput("PANIC")];
+
+      mockCallStellarDeploy.mockRejectedValueOnce(
+        new Error("ContractError: contract panicked at line 42")
+      );
+
+      const result = await batchDeployTokens(inputs);
+
+      expect(result.failed[0].error).toContain("ContractError");
+      expect(result.failed[0].error).not.toContain("TIMEOUT");
+    });
+
+    it("records RPC error messages for observability", async () => {
+      const inputs = [makeInput("OBS")];
+      const errorMsg =
+        "SOROBAN_RPC_ERROR: invocation failed — insufficient balance in stellar_account";
+
+      mockCallStellarDeploy.mockRejectedValueOnce(new Error(errorMsg));
+
+      const result = await batchDeployTokens(inputs);
+
+      expect(result.failed[0].error).toBe(errorMsg);
+    });
+  });
+
+  // ── 7. Edge cases ─────────────────────────────────────────────────────────
 
   describe("edge cases", () => {
     it("handles a single-token batch that fails", async () => {
@@ -550,6 +607,25 @@ describe("batchDeployTokens — Stellar-level partial failure scenarios", () => 
       expect(ord1Idx).toBeLessThan(ord2Idx);
       expect(ord2Idx).toBeLessThan(ord3Idx);
       expect(ord3Idx).toBeLessThan(ord4Idx);
+    });
+
+    it("handles DB transaction failure and returns all inputs as failed", async () => {
+      const inputs = [makeInput("DB1"), makeInput("DB2")];
+
+      mockCallStellarDeploy
+        .mockResolvedValueOnce({ address: STELLAR_ADDRS[0] })
+        .mockResolvedValueOnce({ address: STELLAR_ADDRS[1] });
+
+      vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+        new Error("Unique constraint violation")
+      );
+
+      const result = await batchDeployTokens(inputs);
+
+      expect(result.succeeded).toHaveLength(0);
+      expect(result.failed).toHaveLength(2);
+      expect(result.failed[0].error).toContain("Database");
+      expect(result.failed[1].error).toContain("Database");
     });
   });
 });
