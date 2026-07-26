@@ -10,6 +10,7 @@
 /// * Commission is calculated on the `fee_payment` passed to `create_token`.
 /// * Commissions accumulate in storage; the admin triggers payouts explicitly.
 /// * A referrer cannot refer themselves.
+/// * Circular referral chains are detected and rejected at registration time.
 use soroban_sdk::{Address, Env};
 
 use crate::storage;
@@ -23,6 +24,8 @@ pub const DEFAULT_COMMISSION_BPS: u32 = 500;
 pub const MAX_COMMISSION_BPS: u32 = 2_000;
 /// Basis-point denominator.
 const BPS_DENOM: i128 = 10_000;
+/// Maximum depth of referral chain to prevent unbounded traversal on cycles.
+pub const MAX_REFERRAL_CHAIN_DEPTH: u32 = 100;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -78,20 +81,59 @@ fn set_total_earned(env: &Env, referrer: &Address, amount: i128) {
         .set(&DataKey::ReferralTotalEarned(referrer.clone()), &amount);
 }
 
+// ── Cycle Detection ───────────────────────────────────────────────────────────
+
+/// Check if adding a referral from `referee` → `referrer` would create a cycle.
+/// Walks the referral chain of `referrer` to ensure `referee` is not in it.
+fn would_create_cycle(env: &Env, referee: &Address, referrer: &Address) -> bool {
+    let mut current = referrer.clone();
+    let mut depth = 0u32;
+
+    loop {
+        // Check if we've found the referee in the chain (would create a cycle)
+        if current == *referee {
+            return true;
+        }
+
+        // Check depth limit to prevent unbounded traversal
+        if depth >= MAX_REFERRAL_CHAIN_DEPTH {
+            return false;
+        }
+
+        // Get the next referrer in the chain
+        match get_referral_info(env, &current) {
+            Some(info) => {
+                current = info.referrer;
+                depth = depth.saturating_add(1);
+            }
+            None => {
+                // Reached the end of the chain (no cycle)
+                return false;
+            }
+        }
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Register a referral relationship.
 ///
 /// `referee` is the new user; `referrer` is the existing user who brought them.
 /// A referee can only register once. A user cannot refer themselves.
+/// Circular referral chains are detected and rejected.
 ///
 /// # Errors
-/// * `InvalidParameters` – `referee == referrer` or referral already registered.
+/// * `InvalidParameters` – `referee == referrer`, referral already registered, or would create a cycle.
 pub fn register_referral(env: &Env, referee: &Address, referrer: &Address) -> Result<(), Error> {
     if referee == referrer {
         return Err(Error::InvalidParameters);
     }
     if get_referral_info(env, referee).is_some() {
+        return Err(Error::InvalidParameters);
+    }
+
+    // Check for circular reference
+    if would_create_cycle(env, referee, referrer) {
         return Err(Error::InvalidParameters);
     }
 
@@ -380,5 +422,100 @@ mod tests {
 
         // No referrer — earned should be 0.
         assert_eq!(client.get_referral_earned(&admin), 0_i128);
+    }
+
+    // ── Circular reference guard tests ────────────────────────────────────────
+
+    #[test]
+    fn direct_cycle_is_rejected() {
+        let (env, contract_id, _admin, _treasury) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let user_a = Address::generate(&env);
+        let user_b = Address::generate(&env);
+
+        // A refers to B
+        client.register_referral(&user_a, &user_b);
+
+        // Attempt B → A (would create direct cycle) should fail
+        let err = client.try_register_referral(&user_b, &user_a).unwrap_err().unwrap();
+        assert_eq!(err, crate::types::Error::InvalidParameters);
+    }
+
+    #[test]
+    fn indirect_cycle_is_rejected() {
+        let (env, contract_id, _admin, _treasury) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let user_a = Address::generate(&env);
+        let user_b = Address::generate(&env);
+        let user_c = Address::generate(&env);
+
+        // A → B → C
+        client.register_referral(&user_a, &user_b);
+        client.register_referral(&user_b, &user_c);
+
+        // Attempt C → A (would create indirect cycle A → B → C → A) should fail
+        let err = client.try_register_referral(&user_c, &user_a).unwrap_err().unwrap();
+        assert_eq!(err, crate::types::Error::InvalidParameters);
+    }
+
+    #[test]
+    fn normal_multi_level_chain_is_allowed() {
+        let (env, contract_id, _admin, _treasury) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let user_a = Address::generate(&env);
+        let user_b = Address::generate(&env);
+        let user_c = Address::generate(&env);
+        let user_d = Address::generate(&env);
+
+        // Build a normal chain: A → B → C → D (no cycles)
+        client.register_referral(&user_a, &user_b);
+        client.register_referral(&user_b, &user_c);
+        client.register_referral(&user_c, &user_d);
+
+        // All registrations should succeed
+        assert!(client.try_register_referral(&user_a, &user_b).is_ok());
+        assert!(client.try_register_referral(&user_b, &user_c).is_ok());
+        assert!(client.try_register_referral(&user_c, &user_d).is_ok());
+
+        // Verify the chain is stored correctly
+        let referral_a = client.get_referral(&user_a);
+        assert_eq!(referral_a.referrer, user_b);
+    }
+
+    #[test]
+    fn unrelated_chains_do_not_interfere() {
+        let (env, contract_id, _admin, _treasury) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let chain1_a = Address::generate(&env);
+        let chain1_b = Address::generate(&env);
+        let chain2_a = Address::generate(&env);
+        let chain2_b = Address::generate(&env);
+
+        // Chain 1: A → B
+        client.register_referral(&chain1_a, &chain1_b);
+
+        // Chain 2: C → D (independent)
+        let err = client.try_register_referral(&chain2_a, &chain2_b);
+        // Should succeed since chain2 is independent
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn can_refer_to_root_of_chain() {
+        let (env, contract_id, _admin, _treasury) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let root = Address::generate(&env);
+        let user_a = Address::generate(&env);
+        let user_b = Address::generate(&env);
+
+        // A → root, B → root (multiple people referring to same root is fine)
+        client.register_referral(&user_a, &root);
+        let result = client.try_register_referral(&user_b, &root);
+        assert!(result.is_ok());
     }
 }

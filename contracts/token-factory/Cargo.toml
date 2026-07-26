@@ -40,7 +40,3 @@ cases = 100
 max_shrink_iters = 1000
 # Timeout per test case (in milliseconds)
 timeout = 5000
-
-[[test]]
-name = "contract_replay_regression_test"
-path = "tests/contract_replay_regression_test.rs"
