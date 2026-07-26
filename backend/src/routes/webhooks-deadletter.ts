@@ -166,6 +166,72 @@ router.post(
 );
 
 /**
+ * POST /api/webhooks/dead-letter/:id/requeue
+ * Manually trigger a requeue for a dead-letter entry, incrementing the
+ * requeue counter. Rejects with 409 if the poison-message cap is hit.
+ */
+router.post(
+  "/:id/requeue",
+  authenticateAdmin,
+  auditLog("requeue_dead_letter", "webhook_dead_letter"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const deadLetter = await webhookDeadLetterService.getEntry(id);
+
+      if (!deadLetter) {
+        return res.status(404).json(
+          errorResponse({
+            code: "NOT_FOUND",
+            message: "Dead-letter entry not found",
+          })
+        );
+      }
+
+      if (deadLetter.resolvedAt) {
+        return res.status(409).json(
+          errorResponse({
+            code: "ALREADY_RESOLVED",
+            message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
+          })
+        );
+      }
+
+      try {
+        const requeued = await webhookDeadLetterService.requeueDeadLetter(id);
+
+        res.json(
+          successResponse({
+            message: "Dead-letter entry requeued for delivery",
+            id,
+            requeueCount: requeued.requeueCount,
+          })
+        );
+      } catch (error: any) {
+        if (error.name === "PoisonMessageError") {
+          return res.status(409).json(
+            errorResponse({
+              code: "POISON_MESSAGE",
+              message: "Dead-letter entry has exceeded the maximum requeue limit",
+              details: { requeueCount: deadLetter.requeueCount },
+            })
+          );
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.error("Error requeuing dead-letter entry:", error);
+      res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to requeue dead-letter entry",
+        })
+      );
+    }
+  }
+);
+
+/**
  * DELETE /api/webhooks/dead-letter/:id
  * Discard a dead-letter entry without retrying delivery.
  */
