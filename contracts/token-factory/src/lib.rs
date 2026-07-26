@@ -118,6 +118,8 @@ const _ISOLATED_DISABLED_stream_claim_differential_test: () = ();
 
 #[cfg(test)]
 mod cross_contract_integration_test;
+#[cfg(test)]
+mod compliance_reporting_test;
 
 // #[cfg(test)]
 // mod cross_contract_auth_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
