@@ -14,6 +14,7 @@ export interface ListenerReconnectConfig {
   backoffFactor: number;
   jitterFraction: number;
   healthResetThreshold: number;
+  maxRetries: number;
 }
 
 export const LISTENER_RECONNECT_CONFIG: ListenerReconnectConfig = {
@@ -22,6 +23,7 @@ export const LISTENER_RECONNECT_CONFIG: ListenerReconnectConfig = {
   backoffFactor: 2,
   jitterFraction: 0.25,
   healthResetThreshold: 5,
+  maxRetries: 10,
 };
 
 export function calculateReconnectDelay(
