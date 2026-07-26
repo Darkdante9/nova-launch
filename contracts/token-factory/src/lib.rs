@@ -173,6 +173,10 @@ const _ISOLATED_DISABLED_vault_deposit_withdraw_test: () = ();
 #[cfg(test)]
 mod vault_error_test;
 
+/// Tests for token recovery authorization coverage (#1568).
+#[cfg(test)]
+mod token_recovery_test;
+
 // #[cfg(test)]
 // mod batch_atomicity_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 
