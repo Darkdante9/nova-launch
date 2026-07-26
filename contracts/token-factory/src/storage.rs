@@ -1595,6 +1595,23 @@ pub fn remove_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
         .remove(&key);
 }
 
+/// Mark that the contract-wide milestone verifier has been configured
+pub fn set_verifier_configured(env: &Env, configured: bool) {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, "verifier_configured"), &configured);
+}
+
+/// Check if the contract-wide milestone verifier has been configured
+pub fn is_verifier_configured(env: &Env) -> bool {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .get::<_, bool>(&Symbol::new(env, "verifier_configured"))
+        .unwrap_or(false)
+}
+
 // ============================================================
 // Storage Functions - Campaign Management
 // ============================================================
