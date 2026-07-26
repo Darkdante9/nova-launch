@@ -54,6 +54,14 @@ mod stream_types;
 mod recurring_stream;
 #[cfg(test)]
 mod test_helpers;
+#[cfg(test)]
+mod freeze_functions_test;
+#[cfg(test)]
+mod game_history_test;
+#[cfg(test)]
+mod proposal_queue_test;
+#[cfg(test)]
+mod event_versions_test;
 mod timelock;
 mod token_creation;
 mod treasury;
