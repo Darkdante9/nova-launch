@@ -1123,19 +1123,19 @@ pub fn vote_proposal(
             proposal.votes_for = proposal
                 .votes_for
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
         VoteChoice::Against => {
             proposal.votes_against = proposal
                 .votes_against
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
         VoteChoice::Abstain => {
             proposal.votes_abstain = proposal
                 .votes_abstain
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
     }
 

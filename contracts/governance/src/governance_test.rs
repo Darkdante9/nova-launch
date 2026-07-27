@@ -555,10 +555,13 @@ fn proposal_finalize_after_voting_period_ends() {
         &creator,
         &String::from_str(&env, "Test proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64, // Voting period ends immediately
+        &1_u64, // Minimum valid voting period
         &50_i128,
         &50_u32,
     );
+
+    // Advance past the voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     // Finalization should succeed after voting period ends
     let status = c.finalize_proposal(&proposal_id);
@@ -581,12 +584,15 @@ fn proposal_state_active_to_passed() {
         &creator,
         &String::from_str(&env, "Test proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64,
+        &1_u64,
         &50_i128,  // Quorum: 50
         &50_u32,   // Threshold: 50%
     );
 
     c.cast_vote(&voter, &proposal_id, &true);
+
+    // Advance past the voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     let status = c.finalize_proposal(&proposal_id);
     assert_eq!(status, types::ProposalStatus::Passed);
@@ -607,13 +613,16 @@ fn proposal_state_active_to_rejected() {
         &creator,
         &String::from_str(&env, "Test proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64,
+        &1_u64,
         &100_i128, // Quorum: 100
         &50_u32,   // Threshold: 50%
     );
 
     c.cast_vote(&voter1, &proposal_id, &true);  // 100 for
     c.cast_vote(&voter2, &proposal_id, &false); // 100 against
+
+    // Advance past the voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     let status = c.finalize_proposal(&proposal_id);
     assert_eq!(status, types::ProposalStatus::Rejected);
@@ -632,12 +641,15 @@ fn proposal_state_active_to_failed_no_quorum() {
         &creator,
         &String::from_str(&env, "Test proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64,
+        &1_u64,
         &100_i128, // Quorum: 100 (not met)
         &50_u32,
     );
 
     c.cast_vote(&voter, &proposal_id, &true);
+
+    // Advance past the voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     let status = c.finalize_proposal(&proposal_id);
     assert_eq!(status, types::ProposalStatus::Failed);
@@ -778,13 +790,16 @@ fn proposal_vote_rounding_behavior() {
         &creator,
         &String::from_str(&env, "Test proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64,
+        &1_u64,
         &150_i128,
         &33_u32, // 33% threshold
     );
 
     c.cast_vote(&voter1, &proposal_id, &true);  // 100 for
     c.cast_vote(&voter2, &proposal_id, &false); // 100 against
+
+    // Advance past voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     // Total: 200 votes, threshold: (200 * 33) / 100 = 66
     // For: 100 > 66, so should pass
@@ -809,7 +824,7 @@ fn proposal_lifecycle_creation_to_completion() {
         &creator,
         &String::from_str(&env, "Full lifecycle proposal"),
         &soroban_sdk::Bytes::new(&env),
-        &0_u64,
+        &1_u64,
         &50_i128,
         &50_u32,
     );
@@ -823,6 +838,9 @@ fn proposal_lifecycle_creation_to_completion() {
     // Verify proposal is still active
     let proposal = c.get_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.status, types::ProposalStatus::Active);
+
+    // Advance past voting period
+    env.ledger().with_mut(|li| { li.timestamp += 2; });
 
     // Step 3: Finalize (transition to terminal state)
     let status = c.finalize_proposal(&proposal_id);

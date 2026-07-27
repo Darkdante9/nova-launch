@@ -151,8 +151,20 @@ impl GovernanceContract {
         voting_period: u64,
         quorum: i128,
         threshold_percent: u32,
-    ) -> u32 {
+    ) -> Result<u32, Error> {
         creator.require_auth();
+
+        // Bounds validation — reject malformed proposals before any storage write
+        if threshold_percent > 100 {
+            return Err(Error::InvalidParameters);
+        }
+        if quorum <= 0 {
+            return Err(Error::InvalidParameters);
+        }
+        if voting_period == 0 {
+            return Err(Error::InvalidParameters);
+        }
+
         let proposal_id = storage::get_proposal_count(&env);
         let voting_end = env.ledger().timestamp() + voting_period;
         let proposal = GovernanceProposal {
@@ -169,7 +181,7 @@ impl GovernanceContract {
         };
         storage::set_proposal(&env, proposal_id, &proposal);
         storage::set_proposal_count(&env, proposal_id + 1);
-        proposal_id
+        Ok(proposal_id)
     }
 
     /// Execute a passed proposal (atomically with state change)
@@ -264,12 +276,17 @@ impl GovernanceContract {
         if env.ledger().timestamp() <= proposal.voting_end {
             return Err(FinalizationError::VotingPeriodNotEnded);
         }
-        let total_votes = proposal.votes_for + proposal.votes_against;
+        let total_votes = proposal
+            .votes_for
+            .checked_add(proposal.votes_against)
+            .ok_or(FinalizationError::ArithmeticOverflow)?;
         let final_status = if total_votes < proposal.quorum {
             ProposalStatus::Failed
         } else {
-            let threshold_votes =
-                (total_votes * proposal.threshold_percent as i128) / 100;
+            let threshold_votes = total_votes
+                .checked_mul(proposal.threshold_percent as i128)
+                .ok_or(FinalizationError::ArithmeticOverflow)?
+                / 100;
             if proposal.votes_for > threshold_votes {
                 ProposalStatus::Passed
             } else {
@@ -295,3 +312,6 @@ mod governance_test;
 
 #[cfg(test)]
 mod governance_property_test;
+
+#[cfg(test)]
+mod governance_bounds_test;

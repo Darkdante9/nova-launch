@@ -3911,6 +3911,14 @@ impl TokenFactory {
         storage::get_campaign(&env, campaign_id).ok_or(Error::CampaignNotFound)
     }
 
+    /// Cancel a campaign (Active or Paused → Cancelled).
+    ///
+    /// Permanently cancels the campaign, preventing any further state changes.
+    /// Rejected from terminal states (Completed, Cancelled, Expired).
+    pub fn cancel_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
+        campaign::cancel_campaign(&env, &caller, campaign_id)
+    }
+
     /// Finalize a campaign (Active or Paused → Completed). Safe to retry on failure.
     pub fn finalize_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
         campaign::finalize_campaign(&env, &caller, campaign_id)

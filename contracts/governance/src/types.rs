@@ -172,4 +172,6 @@ pub enum FinalizationError {
     AlreadyFinalized = 3,
     AlreadyExecuted = 4,
     ProposalNotPassed = 5,
+    /// Checked arithmetic overflow during vote-total or threshold computation
+    ArithmeticOverflow = 6,
 }
