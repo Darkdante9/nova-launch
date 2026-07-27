@@ -706,6 +706,20 @@ pub struct BurnAuction {
     pub settled_at: Option<u64>,
 }
 
+/// Constant-product AMM pool state.
+///
+/// Stores reserves and LP token supply for a (token_a, token_b) pair.
+/// The pair ordering is determined by the first `add_liquidity` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmmPool {
+    pub token_a: Address,
+    pub token_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub total_lp: i128,
+}
+
 /// Storage keys for contract data
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -843,6 +857,8 @@ pub enum DataKey {
     BurnScheduleCount,
     // Metadata update history count: token_index
     MetadataHistoryCount(u32),
+    // AMM liquidity pools: keyed by (token_a, token_b) in creation order
+    AmmPool(Address, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1159,6 +1175,11 @@ impl Error {
     pub const DistributionZeroSupply: Self = Self(105);
     // Multisig errors
     pub const DuplicateSigners: Self = Self(106);
+    // AMM errors (#1674)
+    pub const PoolNotFound: Self = Self(107);
+    pub const InsufficientLiquidity: Self = Self(108);
+    pub const SlippageExceeded: Self = Self(109);
+    pub const InvalidTokenPair: Self = Self(110);
 }
 
 impl From<Error> for soroban_sdk::Error {
