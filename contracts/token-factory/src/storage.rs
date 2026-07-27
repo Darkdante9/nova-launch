@@ -1,6 +1,9 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, StreamCursor, TokenInfo};
+use crate::types::{
+    BuybackCampaign, DataKey, Error, FactoryState, RevealBatchContinuation,
+    SettleBatchContinuation, StreamCursor, TokenInfo,
+};
 
 // ============================================================
 // TTL Bump Constants (#1128)
@@ -2108,4 +2111,150 @@ pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64
         &new_count,
     );
     Ok(())
+}
+
+// ============================================================
+// Gas-Bounded Batch Scheduler (#1625)
+// ============================================================
+
+/// Configurable per-ledger gas budget (CPU instructions), shared across all
+/// tenants by the fair-share scheduler. Falls back to
+/// `batch_scheduler::DEFAULT_LEDGER_GAS_BUDGET` until an admin overrides it.
+pub fn get_ledger_gas_budget(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::BatchGasBudget)
+        .unwrap_or(crate::batch_scheduler::DEFAULT_LEDGER_GAS_BUDGET)
+}
+
+/// Admin-configurable override of the per-ledger gas budget.
+pub fn set_ledger_gas_budget(env: &Env, budget: u64) {
+    env.storage().instance().set(&DataKey::BatchGasBudget, &budget);
+}
+
+/// Ordered set of tenants with a pending batch continuation. Front of the
+/// vector is served first; a tenant is moved to the back after being served
+/// so no tenant can monopolize consecutive ledgers.
+pub fn get_fair_share_queue(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::FairShareQueue)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_fair_share_queue(env: &Env, queue: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::FairShareQueue, queue);
+}
+
+/// Add a tenant to the back of the fair-share queue if not already present.
+pub fn enqueue_tenant(env: &Env, tenant: &Address) {
+    let mut queue = get_fair_share_queue(env);
+    let mut already_present = false;
+    for t in queue.iter() {
+        if t == *tenant {
+            already_present = true;
+            break;
+        }
+    }
+    if !already_present {
+        queue.push_back(tenant.clone());
+        set_fair_share_queue(env, &queue);
+    }
+}
+
+/// Remove a tenant from the fair-share queue (it has no more pending work).
+pub fn dequeue_tenant(env: &Env, tenant: &Address) {
+    let queue = get_fair_share_queue(env);
+    let mut new_queue = Vec::new(env);
+    for t in queue.iter() {
+        if t != *tenant {
+            new_queue.push_back(t.clone());
+        }
+    }
+    set_fair_share_queue(env, &new_queue);
+}
+
+/// Move a served-but-still-pending tenant to the back of the queue so the
+/// next ledger's fair share is offered to the next tenant in line first.
+pub fn rotate_tenant_to_back(env: &Env, tenant: &Address) {
+    dequeue_tenant(env, tenant);
+    enqueue_tenant(env, tenant);
+}
+
+/// Gas a tenant has already consumed on the given ledger.
+pub fn get_tenant_ledger_gas_used(env: &Env, tenant: &Address, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq))
+        .unwrap_or(0)
+}
+
+/// Total gas consumed by all tenants on the given ledger.
+pub fn get_ledger_gas_used(env: &Env, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::LedgerGasUsed(ledger_seq))
+        .unwrap_or(0)
+}
+
+/// Record `gas` as consumed by `tenant` on `ledger_seq`, updating both the
+/// per-tenant and ledger-wide running totals.
+pub fn record_gas_used(env: &Env, tenant: &Address, ledger_seq: u32, gas: u64) {
+    let tenant_used = get_tenant_ledger_gas_used(env, tenant, ledger_seq).saturating_add(gas);
+    env.storage().temporary().set(
+        &DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq),
+        &tenant_used,
+    );
+    // Keep the accounting entry alive for the rest of this ledger.
+    env.storage().temporary().extend_ttl(
+        &DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq),
+        1,
+        1,
+    );
+
+    let ledger_used = get_ledger_gas_used(env, ledger_seq).saturating_add(gas);
+    env.storage()
+        .temporary()
+        .set(&DataKey::LedgerGasUsed(ledger_seq), &ledger_used);
+    env.storage()
+        .temporary()
+        .extend_ttl(&DataKey::LedgerGasUsed(ledger_seq), 1, 1);
+}
+
+pub fn get_reveal_continuation(env: &Env, tenant: &Address) -> Option<RevealBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RevealContinuation(tenant.clone()))
+}
+
+pub fn set_reveal_continuation(env: &Env, tenant: &Address, continuation: &RevealBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RevealContinuation(tenant.clone()), continuation);
+    bump_persistent(env, &DataKey::RevealContinuation(tenant.clone()));
+}
+
+pub fn clear_reveal_continuation(env: &Env, tenant: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::RevealContinuation(tenant.clone()));
+}
+
+pub fn get_settle_continuation(env: &Env, tenant: &Address) -> Option<SettleBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SettleContinuation(tenant.clone()))
+}
+
+pub fn set_settle_continuation(env: &Env, tenant: &Address, continuation: &SettleBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SettleContinuation(tenant.clone()), continuation);
+    bump_persistent(env, &DataKey::SettleContinuation(tenant.clone()));
+}
+
+pub fn clear_settle_continuation(env: &Env, tenant: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SettleContinuation(tenant.clone()));
 }

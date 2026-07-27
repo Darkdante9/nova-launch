@@ -403,7 +403,7 @@ pub fn preflight_batch_settle(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn validate_token_params(env: &Env, params: &TokenCreationParams) -> Result<(), Error> {
+pub(crate) fn validate_token_params(env: &Env, params: &TokenCreationParams) -> Result<(), Error> {
     if params.name.len() == 0 || params.name.len() > 32 {
         return Err(Error::InvalidTokenParams);
     }

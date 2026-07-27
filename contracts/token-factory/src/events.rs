@@ -1817,3 +1817,28 @@ pub fn emit_multisig_executed(env: &Env, proposal_id: u64, executor: &Address) {
     env.events()
         .publish((symbol_short!("ms_exe_v1"), proposal_id), (executor,));
 }
+
+// ── Gas-bounded batch scheduler (#1625) ─────────────────────────────────────
+
+/// Emitted when a scheduled batch is split by the gas-bounded scheduler: a
+/// chunk of `executed_count` items committed now, `remaining_count` deferred
+/// to a continuation the tenant can resume on a later ledger.
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_sch1
+pub fn emit_batch_scheduled(env: &Env, tenant: &Address, executed_count: u32, remaining_count: u32) {
+    env.events().publish(
+        (symbol_short!("bch_sch1"), tenant.clone()),
+        (executed_count, remaining_count),
+    );
+}
+
+/// Emitted when a batch continuation finishes draining (its last chunk committed).
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_don1
+pub fn emit_batch_continuation_completed(env: &Env, tenant: &Address) {
+    let ledger = env.ledger().sequence();
+    env.events()
+        .publish((symbol_short!("bch_don1"), tenant.clone()), (ledger,));
+}

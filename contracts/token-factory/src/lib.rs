@@ -16,6 +16,7 @@ mod ipfs_pinning;
 mod referral;
 
 mod batch_operations;
+mod batch_scheduler;
 mod burn;
 mod clawback;
 mod campaign;
@@ -184,9 +185,10 @@ mod vault_balance_invariant_proptest;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
-    AuctionStatus, BurnAuction, BuybackCampaign, CampaignStatus, ContractMetadata,
-    DynamicQuorumConfig, Error, FactoryState, PaginationCursor, PreflightItemResult, StreamInfo,
-    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
+    PreflightItemResult, StreamInfo, StreamPage, StreamParams, TokenCreationParams, TokenInfo,
+    TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -1538,6 +1540,101 @@ impl TokenFactory {
         recipients: Vec<(Address, i128)>,
     ) -> Result<Vec<PreflightItemResult>, Error> {
         batch_operations::preflight_batch_settle(&env, creator, token_index, recipients)
+    }
+
+    // ── Gas-bounded batch scheduler (#1625) ──────────────────────────────
+
+    /// Gas-bounded, fair-share-scheduled version of `batch_reveal`.
+    ///
+    /// Executes as many leading `tokens` as fit under the current ledger's
+    /// gas budget and this tenant's fair share of it (the budget divided
+    /// across every tenant with pending scheduled work this ledger). Any
+    /// remainder is persisted as a continuation — call `resume_batch_reveal`
+    /// on a later ledger to finish it. Only one reveal continuation may be
+    /// pending per tenant at a time.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `InvalidParameters`, `BatchTooLarge`,
+    /// `ContinuationAlreadyPending`, `InvalidTokenParams`, `InsufficientFee`.
+    pub fn schedule_batch_reveal(
+        env: Env,
+        creator: Address,
+        tokens: Vec<TokenCreationParams>,
+        total_fee_payment: i128,
+    ) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::schedule_batch_reveal(&env, creator, tokens, total_fee_payment);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Resume a pending `schedule_batch_reveal` continuation for `creator`.
+    /// Must be called on a ledger after the one the continuation last made
+    /// progress on.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `NoContinuationPending`, `ContinuationNotYetEligible`,
+    /// `InvalidTokenParams`, `InsufficientFee`.
+    pub fn resume_batch_reveal(env: Env, creator: Address) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::resume_batch_reveal(&env, creator);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Gas-bounded, fair-share-scheduled version of `batch_settle`.
+    ///
+    /// Executes as many leading `recipients` as fit under the current
+    /// ledger's gas budget and this tenant's fair share of it. Any
+    /// remainder is persisted as a continuation — call `resume_batch_settle`
+    /// on a later ledger to finish it. Only one settle continuation may be
+    /// pending per tenant at a time.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `InvalidParameters`, `BatchTooLarge`,
+    /// `ContinuationAlreadyPending`, `TokenNotFound`, `Unauthorized`,
+    /// `TokenPaused`, `MaxSupplyExceeded`.
+    pub fn schedule_batch_settle(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        recipients: Vec<(Address, i128)>,
+    ) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::schedule_batch_settle(&env, creator, token_index, recipients);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Resume a pending `schedule_batch_settle` continuation for `creator`.
+    /// Must be called on a ledger after the one the continuation last made
+    /// progress on.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `NoContinuationPending`, `ContinuationNotYetEligible`,
+    /// `TokenPaused`, `MaxSupplyExceeded`.
+    pub fn resume_batch_settle(env: Env, creator: Address) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::resume_batch_settle(&env, creator);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Admin-only: set the per-ledger gas budget (CPU instructions) shared
+    /// by the fair-share batch scheduler across all tenants.
+    pub fn set_batch_gas_budget(env: Env, admin: Address, budget: u64) -> Result<(), Error> {
+        batch_scheduler::set_ledger_gas_budget(&env, admin, budget)
+    }
+
+    /// Current per-ledger gas budget used by the fair-share batch scheduler.
+    pub fn get_batch_gas_budget(env: Env) -> u64 {
+        batch_scheduler::get_ledger_gas_budget(&env)
+    }
+
+    /// Tenants currently holding a pending batch continuation, queued for
+    /// fair-share gas allocation on the next eligible ledger.
+    pub fn get_pending_batch_tenants(env: Env) -> Vec<Address> {
+        batch_scheduler::pending_tenants(&env)
     }
 
     /// Set metadata URI for a token by index (creator-only convenience function)
