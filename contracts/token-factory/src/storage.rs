@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{
-    BuybackCampaign, DataKey, Error, FactoryState, RevealBatchContinuation,
+    BuybackCampaign, DataKey, Error, FactoryState, Reservation, RevealBatchContinuation,
     SettleBatchContinuation, StreamCursor, TokenInfo,
 };
 
@@ -2257,4 +2257,64 @@ pub fn clear_settle_continuation(env: &Env, tenant: &Address) {
     env.storage()
         .persistent()
         .remove(&DataKey::SettleContinuation(tenant.clone()));
+}
+
+// ============================================================
+// Cross-contract atomic settlement (#1624)
+// ============================================================
+
+/// Default timeout (in ledgers) before a `Prepared` reservation is
+/// considered stuck and eligible for `cleanup_stuck_reservation`.
+/// ~1 day at Stellar's ~5s average ledger close time.
+pub const DEFAULT_RESERVATION_TIMEOUT_LEDGERS: u32 = 17_280;
+
+pub fn next_reservation_id(env: &Env) -> u64 {
+    let id = env
+        .storage()
+        .instance()
+        .get(&DataKey::NextReservationId)
+        .unwrap_or(0u64);
+    env.storage()
+        .instance()
+        .set(&DataKey::NextReservationId, &(id + 1));
+    id
+}
+
+pub fn get_reservation(env: &Env, id: u64) -> Option<Reservation> {
+    env.storage().persistent().get(&DataKey::Reservation(id))
+}
+
+pub fn set_reservation(env: &Env, id: u64, reservation: &Reservation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Reservation(id), reservation);
+    bump_persistent(env, &DataKey::Reservation(id));
+}
+
+/// Total currently reserved (prepared, not yet committed/aborted) against a
+/// token's max-supply headroom.
+pub fn get_reserved_total(env: &Env, token_index: u32) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReservedTotal(token_index))
+        .unwrap_or(0)
+}
+
+pub fn set_reserved_total(env: &Env, token_index: u32, total: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservedTotal(token_index), &total);
+}
+
+pub fn get_reservation_timeout_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReservationTimeoutLedgers)
+        .unwrap_or(DEFAULT_RESERVATION_TIMEOUT_LEDGERS)
+}
+
+pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }

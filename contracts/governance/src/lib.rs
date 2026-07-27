@@ -2,12 +2,13 @@
 
 mod delegation;
 mod events;
+mod settlement;
 mod storage;
 mod types;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String};
 use types::{
-    DelegationRecord, Error,
+    DelegationRecord, Disbursement, Error,
     GovernanceProposal, ProposalStatus, ProposalVote,
     VoteError, FinalizationError,
 };
@@ -166,13 +167,67 @@ impl GovernanceContract {
             votes_against: 0,
             payload,
             status: ProposalStatus::Active,
+            disbursement: None,
         };
         storage::set_proposal(&env, proposal_id, &proposal);
         storage::set_proposal_count(&env, proposal_id + 1);
         proposal_id
     }
 
-    /// Execute a passed proposal (atomically with state change)
+    /// Admin-only: configure the deployed token-factory contract this
+    /// governance instance is authorized to disburse treasury payouts
+    /// through via the two-phase settlement protocol (#1624).
+    pub fn set_token_factory(env: Env, admin: Address, token_factory: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_token_factory(&env, &token_factory);
+        Ok(())
+    }
+
+    /// Attach a treasury payout to an active proposal, to be disbursed
+    /// through token-factory's prepare/commit settlement protocol when the
+    /// proposal executes. Only the proposal's creator may attach a
+    /// disbursement, only while the proposal is still `Active`, and only
+    /// once per proposal.
+    pub fn attach_disbursement(
+        env: Env,
+        creator: Address,
+        proposal_id: u32,
+        recipient: Address,
+        token_index: u32,
+        amount: i128,
+    ) -> Result<(), FinalizationError> {
+        creator.require_auth();
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .ok_or(FinalizationError::ProposalNotFound)?;
+        if proposal.creator != creator {
+            return Err(FinalizationError::ProposalNotFound);
+        }
+        if proposal.status != ProposalStatus::Active {
+            return Err(FinalizationError::AlreadyFinalized);
+        }
+        if proposal.disbursement.is_some() {
+            return Err(FinalizationError::DisbursementAlreadyAttached);
+        }
+        proposal.disbursement = Some(Disbursement {
+            recipient,
+            token_index,
+            amount,
+        });
+        storage::set_proposal(&env, proposal_id, &proposal);
+        Ok(())
+    }
+
+    /// Execute a passed proposal (atomically with state change).
+    ///
+    /// If the proposal carries a `disbursement`, it is settled through
+    /// token-factory's two-phase prepare/commit protocol *before* the
+    /// proposal is marked `Executed` (#1624) — a failed commit auto-aborts
+    /// the reservation and leaves the proposal `Passed` (retryable) rather
+    /// than silently losing the payout.
     pub fn execute_proposal(env: Env, proposal_id: u32) -> Result<(), FinalizationError> {
         let mut proposal = storage::get_proposal(&env, proposal_id)
             .ok_or(FinalizationError::ProposalNotFound)?;
@@ -185,7 +240,13 @@ impl GovernanceContract {
             return Err(FinalizationError::ProposalNotPassed);
         }
 
-        // Atomically mark as executed
+        if let Some(disbursement) = proposal.disbursement.clone() {
+            let token_factory = storage::get_token_factory(&env)
+                .ok_or(FinalizationError::TokenFactoryNotConfigured)?;
+            settlement::execute_disbursement(&env, &token_factory, proposal_id, &disbursement)?;
+        }
+
+        // Only set once settlement (if any) is confirmed committed.
         proposal.status = ProposalStatus::Executed;
         storage::set_proposal(&env, proposal_id, &proposal);
 

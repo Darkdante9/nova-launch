@@ -1842,3 +1842,55 @@ pub fn emit_batch_continuation_completed(env: &Env, tenant: &Address) {
     env.events()
         .publish((symbol_short!("bch_don1"), tenant.clone()), (ledger,));
 }
+
+// ── Cross-contract atomic settlement (#1624) ────────────────────────────────
+
+/// Emitted when a reservation is created by `prepare_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_prep1
+pub fn emit_settlement_prepared(
+    env: &Env,
+    reservation_id: u64,
+    proposal_id: u64,
+    token_index: u32,
+    recipient: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("stl_prep1"), reservation_id),
+        (proposal_id, token_index, recipient.clone(), amount),
+    );
+}
+
+/// Emitted when a reservation is finalized (minted) by `commit_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_cmt1
+pub fn emit_settlement_committed(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_cmt1"), reservation_id), (proposal_id,));
+}
+
+/// Emitted when a reservation is released without minting — via an explicit
+/// `abort_settlement` call (`reason_code == 0`) or because
+/// `commit_settlement` itself failed (`reason_code` is the mint error code).
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_abrt1
+pub fn emit_settlement_aborted(env: &Env, reservation_id: u64, proposal_id: u64, reason_code: u32) {
+    env.events().publish(
+        (symbol_short!("stl_abrt1"), reservation_id),
+        (proposal_id, reason_code),
+    );
+}
+
+/// Emitted when a stuck (never committed or aborted) reservation is
+/// force-released by `cleanup_stuck_reservation` after its timeout window.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_tmo1
+pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
+}

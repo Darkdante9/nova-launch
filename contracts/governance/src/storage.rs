@@ -203,6 +203,16 @@ pub fn has_voted(env: &Env, proposal_id: u32, voter: &Address) -> bool {
         .has(&DataKey::Vote(proposal_id, voter.clone()))
 }
 
+// ─── Token-factory address (cross-contract settlement, #1624) ─────────────
+
+pub fn get_token_factory(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::TokenFactory)
+}
+
+pub fn set_token_factory(env: &Env, address: &Address) {
+    env.storage().instance().set(&DataKey::TokenFactory, address);
+}
+
 /// Query a token balance for vote-weight purposes.
 /// In production this calls the actual token contract; in tests it returns a
 /// fixed value so the proposal tests remain self-contained.

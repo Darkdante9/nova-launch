@@ -18,6 +18,7 @@ mod referral;
 mod batch_operations;
 mod batch_scheduler;
 mod burn;
+mod settlement;
 mod clawback;
 mod campaign;
 #[cfg(feature = "legacy-tests")]
@@ -187,8 +188,8 @@ use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, 
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
     ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
-    PreflightItemResult, StreamInfo, StreamPage, StreamParams, TokenCreationParams, TokenInfo,
-    TokenStats, Vault, VaultStatus,
+    PreflightItemResult, Reservation, StreamInfo, StreamPage, StreamParams, TokenCreationParams,
+    TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -1635,6 +1636,66 @@ impl TokenFactory {
     /// fair-share gas allocation on the next eligible ledger.
     pub fn get_pending_batch_tenants(env: Env) -> Vec<Address> {
         batch_scheduler::pending_tenants(&env)
+    }
+
+    // ── Cross-contract atomic settlement (#1624) ─────────────────────────
+
+    /// Phase 1: reserve `amount` of `token_index` for `proposal_id`, without
+    /// minting anything yet. Callable only by the configured governance
+    /// contract (`governance.require_auth()` plus a match against
+    /// `set_governance`). Returns the new reservation's id.
+    pub fn prepare_settlement(
+        env: Env,
+        governance: Address,
+        proposal_id: u64,
+        recipient: Address,
+        token_index: u32,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        settlement::prepare(&env, governance, proposal_id, recipient, token_index, amount)
+    }
+
+    /// Phase 2 (success path): finalize a `Prepared` reservation by minting
+    /// to its recipient. On failure the reservation is left `Prepared` so
+    /// the caller can explicitly `abort_settlement` it — never silently
+    /// dropped.
+    pub fn commit_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+        settlement::commit(&env, governance, reservation_id)
+    }
+
+    /// Release a `Prepared` reservation without minting, returning its
+    /// amount to the token's available max-supply headroom.
+    pub fn abort_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+        settlement::abort(&env, governance, reservation_id)
+    }
+
+    /// Permissionless watchdog: force-release a reservation that has sat
+    /// `Prepared` past the configured timeout window, guaranteeing no
+    /// reservation is ever stuck indefinitely.
+    pub fn cleanup_stuck_reservation(env: Env, reservation_id: u64) -> Result<(), Error> {
+        settlement::cleanup_stuck_reservation(&env, reservation_id)
+    }
+
+    /// Look up a settlement reservation by id.
+    pub fn get_reservation(env: Env, reservation_id: u64) -> Option<Reservation> {
+        storage::get_reservation(&env, reservation_id)
+    }
+
+    /// Admin-only: configure how many ledgers a reservation may sit
+    /// `Prepared` before `cleanup_stuck_reservation` may force-release it.
+    pub fn set_reservation_timeout_ledgers(env: Env, admin: Address, ledgers: u32) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_reservation_timeout_ledgers(&env, ledgers);
+        Ok(())
+    }
+
+    /// Current reservation timeout (in ledgers).
+    pub fn get_reservation_timeout_ledgers(env: Env) -> u32 {
+        storage::get_reservation_timeout_ledgers(&env)
     }
 
     /// Set metadata URI for a token by index (creator-only convenience function)
