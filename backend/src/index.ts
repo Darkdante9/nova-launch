@@ -38,6 +38,8 @@ import websocketService from "./services/websocket";
 import jobQueue from "./services/jobQueue";
 import { streamReconciliationService } from "./services/streamReconciliation";
 import "./services/streamDivergenceAlerting";
+import sagaCoordinator from "./services/sagaCoordinator";
+import "./services/sagas/batchDeployGovernanceSaga";
 
 dotenv.config();
 
@@ -247,6 +249,9 @@ const server = app.listen(PORT, async () => {
 
   // Attach GraphQL subscriptions (graphql-ws) on the /graphql WS path
   attachGraphqlSubscriptions(server);
+
+  // Resume or compensate any sagas left in-flight by a prior process restart
+  await sagaCoordinator.recoverInterruptedSagas();
 
   // Start event listener only after server (and DB) are ready
   if (process.env.ENABLE_EVENT_LISTENER === "true") {
