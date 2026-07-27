@@ -78,7 +78,19 @@ describe("StellarEventListener Reconnect, Cursor Resume, and Backoff", () => {
     const store = (listener as any).cursorStore;
     vi.spyOn(store, "save").mockResolvedValue(undefined);
     vi.spyOn(store, "load").mockResolvedValue("origin-cursor");
-    
+
+    // Stub out leader election so start() doesn't need a real Redis — grant
+    // leadership immediately and keep every fencing-token check valid.
+    (listener as any).leaderElection = {
+      start: async () => {
+        await (listener as any).onBecameLeader(1);
+      },
+      stop: async () => {},
+      isLeader: () => true,
+      getFencingToken: () => 1,
+      validateFencingToken: async () => true,
+    };
+
     process.env.FACTORY_CONTRACT_ID = "CAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
     process.env.STELLAR_NETWORK = "TESTNET";
   });
