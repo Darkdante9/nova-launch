@@ -838,6 +838,8 @@ pub enum DataKey {
     FractionalVaultByOwner(Address, u32),
     // Per-token freeze allowlist: (token_address, address)
     FrozenAddress(Address, Address),
+    FreezeCooldown(Address),
+    FreezeTimestamp(Address, Address),
     // Scheduled burns
     BurnSchedule(u64),
     BurnScheduleCount,
@@ -1159,6 +1161,7 @@ impl Error {
     pub const DistributionZeroSupply: Self = Self(105);
     // Multisig errors
     pub const DuplicateSigners: Self = Self(106);
+    pub const FreezeCooldownActive: Self = Self(107);
 }
 
 impl From<Error> for soroban_sdk::Error {

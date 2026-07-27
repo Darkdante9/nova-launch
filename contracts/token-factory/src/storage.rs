@@ -2109,3 +2109,29 @@ pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64
     );
     Ok(())
 }
+
+pub fn get_freeze_cooldown(env: &Env, token_address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeCooldown(token_address.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_freeze_cooldown(env: &Env, token_address: &Address, cooldown: u64) {
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::FreezeCooldown(token_address.clone()), &cooldown);
+}
+
+pub fn get_freeze_timestamp(env: &Env, token_address: &Address, address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeTimestamp(token_address.clone(), address.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_freeze_timestamp(env: &Env, token_address: &Address, address: &Address, timestamp: u64) {
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::FreezeTimestamp(token_address.clone(), address.clone()), &timestamp);
+}

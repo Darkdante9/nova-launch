@@ -318,4 +318,32 @@ mod freeze_functions_test {
             );
         });
     }
+
+    #[test]
+    fn test_unfreeze_cooldown_grace_period() {
+        let (env, contract_id, admin, _treasury) = setup();
+        let token = create_token_with_freeze(&env, &contract_id, &admin, true);
+        let target = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // Set cooldown to 100 seconds
+            freeze_functions::set_freeze_cooldown(&env, &token, &admin, 100).unwrap();
+            assert_eq!(freeze_functions::get_freeze_cooldown(&env, &token), 100);
+
+            // Freeze at timestamp 1000
+            env.ledger().set_timestamp(1000);
+            freeze_functions::freeze_address(&env, &token, &admin, &target).unwrap();
+
+            // Attempt unfreeze inside cooldown window (at timestamp 1050) -> should fail with FreezeCooldownActive
+            env.ledger().set_timestamp(1050);
+            let result = freeze_functions::unfreeze_address(&env, &token, &admin, &target);
+            assert_eq!(result, Err(Error::FreezeCooldownActive));
+
+            // Attempt unfreeze after cooldown elapses (at timestamp 1101) -> should succeed
+            env.ledger().set_timestamp(1101);
+            let result = freeze_functions::unfreeze_address(&env, &token, &admin, &target);
+            assert!(result.is_ok());
+            assert!(!freeze_functions::is_frozen(&env, &token, &target));
+        });
+    }
 }
