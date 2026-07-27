@@ -45,6 +45,9 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      - name: Cross-service config parity check
+        run: npx tsx ../scripts/check-config-parity.ts
+
       - name: Verify generated event types are in sync with event-schemas/
         run: |
           npm run generate:event-types
