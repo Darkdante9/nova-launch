@@ -25,7 +25,7 @@ const TENANT_FILTERED_OPS = new Set([
 ]);
 
 const baseClient =
-  globalForPrisma._basepisma ??
+  globalForPrisma._baseprisma ??
   new PrismaClient({
     log:
       process.env.NODE_ENV === "development"
@@ -65,7 +65,7 @@ export const prisma = baseClient.$extends({
 export type ExtendedPrismaClient = typeof prisma;
 
 if (process.env.NODE_ENV !== "production") {
-  globalForPrisma._basepisma = baseClient;
+  globalForPrisma._baseprisma = baseClient;
 }
 
 export default prisma;
