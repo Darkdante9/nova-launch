@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/burn.executed.schema.json",
+  "title": "BurnExecutedEvent",
+  "description": "Published when a token burn transaction has been confirmed on-chain. Consumed by the GraphQL `burnExecuted` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.burnExecuted).",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "burn.executed",
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Schema version for this event type. Bump on breaking changes."
+    },
+    "creatorAddress": {
+      "type": "string",
+      "description": "Owning token's creator address, used for tenant scoping (TenantScopedPayload)."
+    },
+    "tokenAddress": {
+      "type": "string"
+    },
+    "amount": {
+      "description": "Amount burned — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive."
+    },
+    "burnedBy": {
+      "type": "string",
+      "description": "Address that initiated the burn."
+    },
+    "isAdminBurn": {
+      "type": "boolean"
+    },
+    "txHash": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "creatorAddress",
+    "tokenAddress",
+    "amount",
+    "burnedBy",
+    "isAdminBurn",
+    "txHash",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

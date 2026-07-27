@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { ValidatedSearchTokensQuery } from "./schema";
+import { soundex } from "./phonetic";
 
 export function buildTokenSearchQuery(params: ValidatedSearchTokensQuery) {
   const where: Prisma.TokenWhereInput = {};
@@ -67,4 +68,43 @@ export function buildTokenSearchQuery(params: ValidatedSearchTokensQuery) {
   }
 
   return { where, orderBy };
+}
+
+/**
+ * Build a Prisma query for phonetic search — identical to buildTokenSearchQuery
+ * but omits the `q` filter so the caller can fetch a broad result set and
+ * then apply application-level phonetic post-filtering via `phoneticSearch`.
+ */
+export function buildPhoneticSearchQuery(params: ValidatedSearchTokensQuery) {
+  const baseParams = { ...params, q: undefined };
+  return buildTokenSearchQuery(baseParams);
+}
+
+/**
+ * Filter and sort tokens by phonetic similarity to `query`.
+ * Exact symbol/name matches are ranked first (score 2), phonetic matches
+ * second (score 1).  Tokens with no match are excluded.
+ */
+export function phoneticSearch<
+  T extends { symbol: string; name: string },
+>(tokens: T[], query: string): T[] {
+  const q = query.toUpperCase();
+  const qCode = soundex(query);
+
+  const scored = tokens
+    .map((token) => {
+      const symbolUp = token.symbol.toUpperCase();
+      const nameUp = token.name.toUpperCase();
+      let score = 0;
+      if (symbolUp === q || nameUp === q) {
+        score = 2;
+      } else if (soundex(token.symbol) === qCode || soundex(token.name) === qCode) {
+        score = 1;
+      }
+      return { token, score };
+    })
+    .filter((r) => r.score > 0);
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((r) => r.token);
 }

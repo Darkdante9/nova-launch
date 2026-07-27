@@ -285,4 +285,108 @@ describe("WebhookDeduplicationService — Stripe retry deduplication", () => {
       expect(cancelCount).toBe(1);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Concurrent delivery regression matrix (Issue #1290)
+  //
+  // Strategy: complete the first delivery before retries arrive (matching the
+  // Stripe retry pattern where the provider waits for a non-2xx before re-sending).
+  // After the first delivery sets the store, concurrent retries are deduplicated.
+  // ---------------------------------------------------------------------------
+
+  describe("concurrent delivery", () => {
+    async function runRetryMatrix(retryCount: number) {
+      const { service } = makeService();
+      const eventId = stripeEventId(`retry${String(retryCount).padStart(19, '0')}`);
+      let deliveryCount = 0;
+      const handler = vi.fn(async () => { deliveryCount++; return "delivered"; });
+
+      // First delivery completes — this sets the dedup store entry
+      const firstResult = await service.process(eventId, handler);
+
+      // N concurrent retries arrive after the first delivery is acknowledged
+      const retryResults = await Promise.all(
+        Array.from({ length: retryCount }, () => service.process(eventId, handler))
+      );
+
+      return { deliveryCount, firstResult, retryResults };
+    }
+
+    it("2 workers: first delivery succeeds, 1 concurrent retry is deduplicated", async () => {
+      const { deliveryCount, firstResult, retryResults } = await runRetryMatrix(1);
+      expect(deliveryCount).toBe(1);
+      expect(firstResult.processed).toBe(true);
+      expect(firstResult.duplicate).toBe(false);
+      expect(retryResults.every(r => r.duplicate)).toBe(true);
+    });
+
+    it("10 workers: first delivery succeeds, 9 concurrent retries are deduplicated", async () => {
+      const { deliveryCount, firstResult, retryResults } = await runRetryMatrix(9);
+      expect(deliveryCount).toBe(1);
+      expect(firstResult.processed).toBe(true);
+      expect(retryResults).toHaveLength(9);
+      expect(retryResults.every(r => r.duplicate)).toBe(true);
+    });
+
+    it("50 workers: first delivery succeeds, 49 concurrent retries are deduplicated", async () => {
+      const { deliveryCount, firstResult, retryResults } = await runRetryMatrix(49);
+      expect(deliveryCount).toBe(1);
+      expect(firstResult.processed).toBe(true);
+      expect(retryResults).toHaveLength(49);
+      expect(retryResults.every(r => r.duplicate)).toBe(true);
+    });
+
+    it("dedup store TTL: expired entry allows re-delivery after window", async () => {
+      let fakeNow = 0;
+      const { service } = makeService({ windowMs: 1_000, now: () => fakeNow });
+      const eventId = stripeEventId("ttlexpiry0000000000000000");
+      let deliveryCount = 0;
+      const handler = vi.fn(async () => { deliveryCount++; return "ok"; });
+
+      // First delivery
+      await service.process(eventId, handler);
+      expect(deliveryCount).toBe(1);
+
+      // Within window — concurrent retries are all duplicates
+      fakeNow = 500;
+      const withinWindowResults = await Promise.all(
+        Array.from({ length: 5 }, () => service.process(eventId, handler))
+      );
+      expect(deliveryCount).toBe(1);
+      expect(withinWindowResults.every(r => r.duplicate)).toBe(true);
+
+      // Advance past TTL — re-delivery is allowed
+      fakeNow = 1_001;
+      await service.process(eventId, handler);
+      expect(deliveryCount).toBe(2);
+    });
+
+    it("negative: different event IDs each delivered exactly once", async () => {
+      const { service } = makeService();
+      const ids = Array.from({ length: 10 }, (_, i) =>
+        stripeEventId(`unique${String(i).padStart(18, '0')}`)
+      );
+      const counts = new Map<string, number>();
+
+      // For each unique ID: process once fully, then send 4 retries concurrently
+      for (const id of ids) {
+        await service.process(id, async () => {
+          counts.set(id, (counts.get(id) ?? 0) + 1);
+          return "ok";
+        });
+        await Promise.all(
+          Array.from({ length: 4 }, () =>
+            service.process(id, async () => {
+              counts.set(id, (counts.get(id) ?? 0) + 1);
+              return "ok";
+            })
+          )
+        );
+      }
+
+      for (const id of ids) {
+        expect(counts.get(id)).toBe(1);
+      }
+    });
+  });
 });

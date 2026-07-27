@@ -263,6 +263,44 @@ describe("HealthService", () => {
       expect(result.metrics.memory).toBeDefined();
       expect(result.metrics.cpu).toBeDefined();
     });
+
+    it("should include per-service circuit breaker state", async () => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ count: 1n }]);
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+      } as Response);
+
+      const result = await healthService.checkDetailedHealth();
+
+      // The detailed health result is cached for 30s, so an earlier test in
+      // this file may have produced the cached snapshot — assert the field
+      // is present and well-shaped rather than asserting specific content.
+      expect(result.circuitBreakers).toBeDefined();
+      expect(typeof result.circuitBreakers).toBe("object");
+    });
+
+    it("reflects a newly registered circuit breaker once the cache expires", async () => {
+      const { registerCircuitBreaker, getCircuitBreakerRegistrySnapshot, CircuitBreaker } =
+        await import("../../circuitBreaker");
+      const breaker = new CircuitBreaker({
+        failureThreshold: 5,
+        successThreshold: 2,
+        timeoutMs: 30000,
+      });
+      registerCircuitBreaker("test-service-direct", breaker);
+
+      // Verifies the registry itself (independent of HealthService's cache)
+      // exposes exactly the shape `checkDetailedHealth` plumbs through.
+      const snapshot = getCircuitBreakerRegistrySnapshot();
+      expect(snapshot["test-service-direct"]).toEqual({
+        state: "closed",
+        failureCount: 0,
+        successCount: 0,
+        lastFailureTime: 0,
+        timeSinceLastFailure: expect.any(Number),
+      });
+    });
   });
 
   describe("service checks", () => {

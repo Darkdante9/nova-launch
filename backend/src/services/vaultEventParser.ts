@@ -12,7 +12,46 @@ export const VAULT_EVENT_VERSIONS = {
   CLAIMED: 'vlt_cl_v1',
   CANCELLED: 'vlt_cn_v1',
   METADATA_UPDATED: 'vlt_md_v1',
+  // Structured error diagnostics for rejected vault operations (#1384).
+  // Unlike the other events above, this schema has no "_v1" suffix on the
+  // chain side (event name is `vlt_fail`); the contract documents this
+  // event name as immutable, with any future schema change shipping under
+  // a new event name (e.g. `vlt_fail_v2`) rather than a version bump here.
+  OPERATION_FAILED: 'vlt_fail',
 } as const;
+
+/**
+ * Named, stable vault error codes surfaced by the contract's
+ * `Error::name()` mapping (contracts/token-factory/src/types.rs).
+ *
+ * This list intentionally only enumerates the error variants that can be
+ * raised by a vault entry point (`create_vault`, `claim_vault`,
+ * `cancel_vault`, `verify_milestone`, `propose_vault_owner_change`,
+ * `approve_vault_owner_change`). Other contract-wide errors may still
+ * appear on the wire (e.g. `ArithmeticError`, `ContractPaused`) and are
+ * handled via the `VaultErrorName` string type rather than this enum, so
+ * parsing never breaks when the contract adds a new error code — unknown
+ * names simply surface as their raw string instead of being rejected.
+ */
+export enum VaultErrorCode {
+  ContractPaused = 'ContractPaused',
+  InvalidAmount = 'InvalidAmount',
+  InvalidParameters = 'InvalidParameters',
+  TokenNotFound = 'TokenNotFound',
+  Unauthorized = 'Unauthorized',
+  ArithmeticError = 'ArithmeticError',
+  NothingToClaim = 'NothingToClaim',
+  CliffNotReached = 'CliffNotReached',
+  MilestoneUnauthorized = 'MilestoneUnauthorized',
+  MilestoneAlreadyVerified = 'MilestoneAlreadyVerified',
+  VaultOwnerChangePending = 'VaultOwnerChangePending',
+  VaultOwnerChangeNotFound = 'VaultOwnerChangeNotFound',
+  VaultOwnerChangeAlreadyApproved = 'VaultOwnerChangeAlreadyApproved',
+  UnknownError = 'UnknownError',
+}
+
+/** Any error name the contract may report, typed or not (see `VaultErrorCode`). */
+export type VaultErrorName = VaultErrorCode | string;
 
 // Type definitions for vault events
 export interface VaultCreatedEvent {

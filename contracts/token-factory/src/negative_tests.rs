@@ -512,3 +512,207 @@ fn create_token_paused_contract_returns_error() {
 
     assert_eq!(result.unwrap_err().unwrap(), Error::ContractPaused);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_metadata
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Calling set_metadata a second time on the same token must fail because
+// metadata is immutable once set.
+#[test]
+fn set_metadata_already_set_returns_error() {
+    let setup = TestSetup::new();
+    let token_index = setup.deploy_token();
+    let uri = String::from_str(&setup.env, "ipfs://QmFirst");
+
+    // First call succeeds — metadata is still None at this point.
+    setup.client.set_metadata(&token_index, &uri);
+
+    // Second call must fail because metadata_uri is now Some(_).
+    let second_uri = String::from_str(&setup.env, "ipfs://QmSecond");
+    let result = setup.client.try_set_metadata(&token_index, &second_uri);
+
+    assert_eq!(result.unwrap_err().unwrap(), Error::MetadataAlreadySet);
+}
+
+// Calling set_metadata on a token that has been individually paused must
+// return TokenPaused so callers can distinguish from ContractPaused.
+#[test]
+fn set_metadata_paused_token_returns_token_paused() {
+    let setup = TestSetup::new();
+    let token_index = setup.deploy_token();
+
+    // Pause the individual token (not the whole contract).
+    setup.client.pause_token(&setup.admin, &token_index);
+
+    let uri = String::from_str(&setup.env, "ipfs://QmPaused");
+    let result = setup.client.try_set_metadata(&token_index, &uri);
+
+    assert_eq!(result.unwrap_err().unwrap(), Error::TokenPaused);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// freeze_address / unfreeze_address
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Attempting to freeze an address on a token that has not had freeze enabled
+// must be rejected. The contract uses Unauthorized to signal this condition.
+#[test]
+fn freeze_address_freeze_not_enabled_returns_unauthorized() {
+    let setup = TestSetup::new();
+    let token_index = setup.deploy_token();
+    let token_info = setup.client.get_token_info(&token_index).unwrap();
+    let target = Address::generate(&setup.env);
+
+    // freeze_enabled is false by default after create_token.
+    let result = setup.client.try_freeze_address(
+        &token_info.address,
+        &setup.user,
+        &target,
+    );
+
+    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
+}
+
+// Freezing an address that is already frozen must be rejected.
+// The contract returns InvalidParameters for this duplicate-freeze case.
+#[test]
+fn freeze_address_already_frozen_returns_invalid_parameters() {
+    let setup = TestSetup::new();
+    let token_index = setup.deploy_token();
+    let token_info = setup.client.get_token_info(&token_index).unwrap();
+    let target = Address::generate(&setup.env);
+
+    // Enable freeze for this token first.
+    setup.client.set_freeze_enabled(&token_info.address, &setup.user, &true);
+
+    // First freeze succeeds.
+    setup.client.freeze_address(&token_info.address, &setup.user, &target);
+
+    // Second freeze on the same address must fail.
+    let result = setup.client.try_freeze_address(
+        &token_info.address,
+        &setup.user,
+        &target,
+    );
+
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidParameters);
+}
+
+// Unfreezing an address that has never been frozen must be rejected.
+// The contract returns InvalidParameters for this not-frozen case.
+#[test]
+fn unfreeze_address_not_frozen_returns_invalid_parameters() {
+    let setup = TestSetup::new();
+    let token_index = setup.deploy_token();
+    let token_info = setup.client.get_token_info(&token_index).unwrap();
+    let target = Address::generate(&setup.env);
+
+    // Enable freeze so the call reaches the frozen-check (not the enabled-check).
+    setup.client.set_freeze_enabled(&token_info.address, &setup.user, &true);
+
+    // target was never frozen — unfreeze must fail.
+    let result = setup.client.try_unfreeze_address(
+        &token_info.address,
+        &setup.user,
+        &target,
+    );
+
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidParameters);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tracking comment — error variants without a triggerable negative test
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The following Error codes exist in types.rs but cannot be directly triggered
+// through the TokenFactory client API with the current contract implementation.
+// They are listed here so future contributors know they still need coverage:
+//
+//   Error::InsufficientBalance     (#7)  — admin_burn path; no direct test because
+//                                         admin_burn balance check uses a storage
+//                                         path not reachable without low-level setup.
+//   Error::ArithmeticError         (#8)  — requires crafted overflow; covered by
+//                                         arithmetic_boundary_tests.rs.
+//   Error::BatchTooLarge           (#9)  — batch_burn with an oversized list;
+//                                         covered by batch_atomicity_test.rs.
+//   Error::InvalidAmount           (#10) — covered in mint negative path by
+//                                         supply_cap_test.rs.
+//   Error::ClawbackDisabled        (#11) — contract does not currently return this
+//                                         code; admin_burn skips the clawback check.
+//   Error::InvalidTokenParams      (#15) — batch_create_tokens; covered by
+//                                         batch_token_creation_test.rs.
+//   Error::BatchCreationFailed     (#16) — internal batch path; no public trigger.
+//   Error::StreamNotFound          (#17) — streaming module; covered by
+//                                         stream_error_test.rs.
+//   Error::InvalidSchedule         (#18) — streaming module; covered by
+//                                         stream_error_test.rs.
+//   Error::StreamCancelled         (#19) — streaming module; covered by
+//                                         stream_error_test.rs.
+//   Error::CliffNotReached         (#20) — streaming claim; covered by
+//                                         stream_claim_test.rs.
+//   Error::NothingToClaim          (#21) — streaming claim; covered by
+//                                         stream_claim_test.rs.
+//   Error::MissingAdmin            (#22) — internal storage validation path.
+//   Error::MissingTreasury         (#23) — internal storage validation path.
+//   Error::InvalidBaseFee          (#24) — separate validation path from #3.
+//   Error::InvalidMetadataFee      (#25) — separate validation path from #3.
+//   Error::InconsistentTokenCount  (#26) — invariant guard; covered by
+//                                         invariant_tests.rs.
+//   Error::WithdrawalCapExceeded   (#27) — vault module; covered by
+//                                         vault_error_test.rs.
+//   Error::RecipientNotAllowed     (#28) — transfer restriction; covered by
+//                                         transfer_restrictions_test.rs.
+//   Error::TimelockNotExpired      (#29) — timelock; covered by
+//                                         timelock_test.rs.
+//   Error::ChangeAlreadyExecuted   (#30) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::ChangeNotFound          (#31) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::MaxSupplyExceeded       (#32) — mint path; covered by
+//                                         supply_cap_test.rs.
+//   Error::InvalidMaxSupply        (#33) — mint path; covered by
+//                                         supply_cap_test.rs.
+//   Error::MintingDisabled         (#34) — mint path; covered by
+//                                         supply_cap_test.rs.
+//   Error::FreezeNotEnabled        (#36) — contract returns Unauthorized instead
+//                                         (see freeze_functions.rs L63–L66); no
+//                                         distinct trigger exists at this time.
+//   Error::AddressFrozen           (#37) — contract returns InvalidParameters
+//                                         instead (see freeze_functions.rs).
+//   Error::AddressNotFrozen        (#38) — contract returns InvalidParameters
+//                                         instead (see freeze_functions.rs).
+//   Error::ProposalInTerminalState (#39) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::InvalidStateTransition  (#40) — governance state machine; covered by
+//                                         proposal_state_machine_test.rs.
+//   Error::InvalidTimeWindow       (#41) — governance; covered by
+//                                         governance_timelock_boundary_test.rs.
+//   Error::PayloadTooLarge         (#42) — governance; covered by
+//                                         payload_validation_fuzz_test.rs.
+//   Error::ProposalNotFound        (#43) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::VotingNotStarted        (#44) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::VotingEnded             (#45) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::VotingClosed            (#46) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::AlreadyVoted            (#47) — governance; covered by
+//                                         governance_quorum_test.rs.
+//   Error::ProposalNotQueued       (#48) — governance; covered by
+//                                         queue_proposal_test.rs.
+//   Error::ProposalCancelled       (#49) — governance; covered by
+//                                         governance_error_test.rs.
+//   Error::QuorumNotMet            (#50) — governance; covered by
+//                                         queue_proposal_test.rs.
+//   Error::CampaignNotFound        (#51) — campaign module.
+//   Error::InvalidBudget           (#52) — campaign module.
+//   Error::InsufficientBudget      (#53) — campaign module.
+//   Error::PriceTriggerNotMet      (#54) — campaign module.
+//   Error::CampaignExpiredError    (#55) — campaign module.
+//   Error::IntervalNotElapsed      (#56) — campaign module.
+//   Error::AirdropNotFound         (#57) — airdrop module.
+//   Error::AirdropAlreadyClaimed   (#58) — airdrop module.
+//   Error::InvalidMerkleProof      (#59) — airdrop module.
+//   Error::AirdropExpired          (#60) — airdrop module.

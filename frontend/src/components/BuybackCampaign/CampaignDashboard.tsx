@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ExecuteStepButton } from './ExecuteStepButton';
-import { StellarService } from '../../services/stellar.service';
-import { mapBuybackCampaign } from '../../services/mappers/buybackCampaignMapper';
-import type { BuybackCampaignModel } from '../../types/campaign';
 import { useProjectionRefresh } from '../../hooks/useProjectionRefresh';
+import {
+  useCampaignStepSubscription,
+  type CampaignStepExecutedEvent,
+} from '../../hooks/useCampaignStepSubscription';
 import { campaignApi } from '../../services/campaignApi';
 import { getTxUrl } from '../../utils/explorer';
 import { Skeleton } from '../UI/Skeleton';
+import { estimateNextStepEtaMs, formatEta } from '../../utils/campaignStepEta';
+import type { BuybackCampaignModel } from '../../types/campaign';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
+/** How long the just-completed step stays visually highlighted. */
+const HIGHLIGHT_DURATION_MS = 2_000;
 
 interface CampaignDashboardProps {
   campaignId: number;
@@ -28,10 +33,19 @@ export const CampaignDashboard: React.FC<CampaignDashboardProps> = ({
   const fetchCampaign = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/campaigns/${campaignId}`);
+      const response = await fetch(
+        `${BACKEND_URL}/api/buyback/campaigns/${campaignId}`
+      );
       if (!response.ok) throw new Error('Failed to fetch campaign');
       const data = await response.json();
-      setCampaign(data);
+      setCampaign({
+        ...data,
+        progressPercent:
+          data.totalSteps > 0
+            ? Math.min(100, (data.currentStep / data.totalSteps) * 100)
+            : 0,
+        isActive: data.status === 'ACTIVE',
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -66,6 +80,26 @@ export const CampaignDashboard: React.FC<CampaignDashboardProps> = ({
     console.error('Step execution failed:', err);
     fetchCampaign();
   }, [fetchCampaign]);
+
+  // Real-time step progression — independent of who triggered the execution
+  // (this client or another operator), so it always refetches on delivery.
+  const [highlightedStep, setHighlightedStep] = useState<number | null>(null);
+
+  const handleStepExecuted = useCallback(
+    (event: CampaignStepExecutedEvent) => {
+      setHighlightedStep(event.stepNumber);
+      fetchCampaign();
+      setTimeout(() => setHighlightedStep(null), HIGHLIGHT_DURATION_MS);
+    },
+    [fetchCampaign]
+  );
+
+  useCampaignStepSubscription({
+    campaignId,
+    onStepExecuted: handleStepExecuted,
+  });
+
+  const nextStepEtaMs = campaign ? estimateNextStepEtaMs(campaign.steps) : null;
 
   if (loading) {
     return (
@@ -170,7 +204,14 @@ export const CampaignDashboard: React.FC<CampaignDashboardProps> = ({
 
         {campaign.isActive && (
           <div className="mb-6">
-            <h3 className="text-lg font-semibold mb-4">Current Step</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Current Step</h3>
+              {nextStepEtaMs !== null && (
+                <span className="text-sm text-gray-500">
+                  Est. next step in {formatEta(nextStepEtaMs)}
+                </span>
+              )}
+            </div>
 
             {/* Projection catch-up indicator */}
             {projectionStatus === 'polling' && (
@@ -211,8 +252,11 @@ export const CampaignDashboard: React.FC<CampaignDashboardProps> = ({
             {campaign.steps.map((step) => (
               <div
                 key={step.id}
-                className={`p-4 rounded-lg border-2 ${
-                  step.status === 'COMPLETED'
+                data-testid={`step-${step.stepNumber}`}
+                className={`p-4 rounded-lg border-2 transition-all duration-500 ${
+                  step.stepNumber === highlightedStep
+                    ? 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-300 animate-pulse'
+                    : step.status === 'COMPLETED'
                     ? 'bg-green-50 border-green-200'
                     : step.status === 'FAILED'
                     ? 'bg-red-50 border-red-200'

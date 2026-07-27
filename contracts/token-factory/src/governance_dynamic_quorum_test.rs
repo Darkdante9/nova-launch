@@ -372,3 +372,178 @@ fn test_higher_participation_never_lowers_quorum_below_lower_participation() {
         assert!(q_high >= q_low, "higher participation must not lower quorum");
     });
 }
+
+// ── circulating supply snapshot tests ─────────────────────────────────────────
+
+#[cfg(test)]
+mod supply_snapshot_quorum_tests {
+    use crate::{
+        storage,
+        timelock::{create_proposal, finalize_proposal},
+        governance::initialize_governance,
+        types::{ActionType, Error, TokenInfo},
+        TokenFactory,
+    };
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Address, Bytes, Env, String,
+    };
+
+    fn make_token_info(env: &Env, creator: &Address, supply: i128) -> TokenInfo {
+        TokenInfo {
+            address: Address::generate(env),
+            creator: creator.clone(),
+            name: String::from_str(env, "T"),
+            symbol: String::from_str(env, "T"),
+            decimals: 7,
+            total_supply: supply,
+            initial_supply: supply,
+            max_supply: None,
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: 0,
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        }
+    }
+
+    fn setup(env: &Env) -> (Address, Address) {
+        let contract_id = env.register_contract(None, TokenFactory);
+        let admin = Address::generate(env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(env, &admin);
+            storage::set_treasury(env, &Address::generate(env));
+            storage::set_base_fee(env, 1_000_000);
+            storage::set_metadata_fee(env, 500_000);
+            crate::timelock::initialize_timelock(env, Some(3600)).unwrap();
+            initialize_governance(env, Some(30), Some(51)).unwrap();
+        });
+        (admin, contract_id)
+    }
+
+    fn fee_payload(env: &Env) -> Bytes {
+        let mut b = Bytes::new(env);
+        // 32-byte payload: base_fee (i128 LE, 16B) || metadata_fee (i128 LE, 16B)
+        for byte in 1_000_000i128.to_le_bytes() { b.push_back(byte); }
+        for byte in 500_000i128.to_le_bytes()   { b.push_back(byte); }
+        b
+    }
+
+    /// Supply changes AFTER proposal creation must not affect the quorum threshold.
+    #[test]
+    fn test_supply_change_after_proposal_does_not_affect_quorum() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, contract_id) = setup(&env);
+
+        env.as_contract(&contract_id, || {
+            // Seed a token with supply=1000 before creating the proposal
+            let creator = Address::generate(&env);
+            let mut info = make_token_info(&env, &creator, 1000);
+            // store at index 0
+            let idx = storage::increment_token_count(&env).unwrap() - 1;
+            storage::set_token_info(&env, idx, &info);
+
+            let t = env.ledger().timestamp();
+            let proposal_id = create_proposal(
+                &env, &admin, ActionType::FeeChange,
+                fee_payload(&env), t + 10, t + 86410, t + 90010,
+            ).unwrap();
+
+            // Snapshot should be 1000 (the supply at creation time)
+            let proposal = storage::get_proposal(&env, proposal_id).unwrap();
+            assert_eq!(proposal.circulating_supply_snapshot, 1000);
+
+            // Now inflate supply dramatically (simulates minting after snapshot)
+            info.total_supply = 1_000_000;
+            storage::set_token_info(&env, idx, &info);
+
+            // Quorum uses the snapshot (1000), not the current supply (1_000_000)
+            // 30% of 1000 = 300 votes needed.  Cast 350 For votes.
+            env.ledger().with_mut(|l| l.timestamp = t + 20);
+            let mut p = storage::get_proposal(&env, proposal_id).unwrap();
+            p.state = crate::types::ProposalState::Active;
+            p.votes_for = 350;
+            storage::set_proposal(&env, proposal_id, &p);
+
+            env.ledger().with_mut(|l| l.timestamp = t + 86411);
+            // Should succeed: 350/1000 = 35% ≥ 30% quorum, 100% approval ≥ 51%
+            finalize_proposal(&env, proposal_id).unwrap();
+            let finalized = storage::get_proposal(&env, proposal_id).unwrap();
+            assert_eq!(finalized.state, crate::types::ProposalState::Succeeded);
+        });
+    }
+
+    /// When supply is zero at proposal creation, quorum falls back gracefully.
+    #[test]
+    fn test_snapshot_zero_supply_fallback() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, contract_id) = setup(&env);
+
+        env.as_contract(&contract_id, || {
+            // No tokens deployed — snapshot should be 0
+            let t = env.ledger().timestamp();
+            let proposal_id = create_proposal(
+                &env, &admin, ActionType::FeeChange,
+                fee_payload(&env), t + 10, t + 86410, t + 90010,
+            ).unwrap();
+
+            let proposal = storage::get_proposal(&env, proposal_id).unwrap();
+            assert_eq!(proposal.circulating_supply_snapshot, 0);
+
+            // With snapshot=0, eligible falls back to total_votes.max(1)
+            // Cast 1 For vote → 100% approval, quorum met via fallback
+            env.ledger().with_mut(|l| l.timestamp = t + 20);
+            let mut p = storage::get_proposal(&env, proposal_id).unwrap();
+            p.state = crate::types::ProposalState::Active;
+            p.votes_for = 1;
+            storage::set_proposal(&env, proposal_id, &p);
+
+            env.ledger().with_mut(|l| l.timestamp = t + 86411);
+            finalize_proposal(&env, proposal_id).unwrap();
+            let finalized = storage::get_proposal(&env, proposal_id).unwrap();
+            assert_eq!(finalized.state, crate::types::ProposalState::Succeeded);
+        });
+    }
+
+    /// Old proposals keep their snapshot; a new proposal sees the updated supply.
+    #[test]
+    fn test_old_proposal_keeps_its_snapshot() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, contract_id) = setup(&env);
+
+        env.as_contract(&contract_id, || {
+            let creator = Address::generate(&env);
+            let mut info = make_token_info(&env, &creator, 500);
+            let idx = storage::increment_token_count(&env).unwrap() - 1;
+            storage::set_token_info(&env, idx, &info);
+
+            let t = env.ledger().timestamp();
+            let old_id = create_proposal(
+                &env, &admin, ActionType::FeeChange,
+                fee_payload(&env), t + 10, t + 86410, t + 90010,
+            ).unwrap();
+
+            // Double supply after first proposal
+            info.total_supply = 1000;
+            storage::set_token_info(&env, idx, &info);
+
+            env.ledger().with_mut(|l| l.timestamp = t + 1);
+            let new_id = create_proposal(
+                &env, &admin, ActionType::FeeChange,
+                fee_payload(&env), t + 20, t + 86420, t + 90020,
+            ).unwrap();
+
+            let old_proposal = storage::get_proposal(&env, old_id).unwrap();
+            let new_proposal = storage::get_proposal(&env, new_id).unwrap();
+
+            assert_eq!(old_proposal.circulating_supply_snapshot, 500);
+            assert_eq!(new_proposal.circulating_supply_snapshot, 1000);
+        });
+    }
+}

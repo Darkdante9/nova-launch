@@ -24,6 +24,10 @@
   ],
   "tags": [
     {
+      "name": "Authentication",
+      "description": "Stellar wallet-based authentication: challenge/nonce, verify/login, token refresh, and session revocation"
+    },
+    {
       "name": "Health",
       "description": "Liveness and readiness probes"
     },
@@ -62,9 +66,308 @@
     {
       "name": "Webhooks",
       "description": "Webhook subscriptions and delivery"
+    },
+    {
+      "name": "Admin Jobs",
+      "description": "Dead-letter job inspection with manual retry and discard (admin only)"
     }
   ],
   "paths": {
+    "/auth/challenge": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Request a nonce / challenge to sign with your Stellar wallet",
+        "description": "Returns a one-time nonce that the client must sign with their Stellar private key. The nonce expires after a short TTL. Corresponds to GET /auth/nonce in the NestJS controller.",
+        "operationId": "authChallenge",
+        "parameters": [
+          {
+            "name": "publicKey",
+            "in": "query",
+            "required": true,
+            "description": "Stellar wallet public key (G-address, 56 characters)",
+            "schema": {
+              "type": "string",
+              "minLength": 56,
+              "maxLength": 56,
+              "pattern": "^G[A-Z2-7]{55}$",
+              "example": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce issued successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NonceResponse"
+                },
+                "example": {
+                  "nonce": "3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718",
+                  "expiresAt": 1719100800,
+                  "message": "Sign this message to authenticate: 3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid publicKey query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 400,
+                  "message": "publicKey is required",
+                  "error": "Bad Request"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many nonce requests — rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Authenticate with Stellar wallet signature (verify challenge)",
+        "description": "Verifies the Ed25519 signature over the nonce obtained from POST /auth/challenge. On success, returns a short-lived access token and a longer-lived refresh token. Corresponds to POST /auth/login in the NestJS controller.",
+        "operationId": "authVerify",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletAuthRequest"
+              },
+              "examples": {
+                "typical": {
+                  "summary": "Standard wallet login",
+                  "value": {
+                    "publicKey": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                    "signature": "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ012=",
+                    "nonce": "3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful — tokens issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                },
+                "example": {
+                  "accessToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST...",
+                  "refreshToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST...",
+                  "expiresIn": 900,
+                  "tokenType": "Bearer",
+                  "walletAddress": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request body — missing or invalid fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 400,
+                  "message": ["publicKey should not be empty", "signature should not be empty"],
+                  "error": "Bad Request"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired signature / nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 401,
+                  "message": "Invalid signature or nonce",
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Account suspended or wallet blocked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 403,
+                  "message": "Account is not authorised to authenticate",
+                  "error": "Forbidden"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Refresh access token using a valid refresh token",
+        "description": "Accepts a non-expired refresh token and issues a new access token and rotated refresh token. The old refresh token is revoked on success.",
+        "operationId": "authRefresh",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenRequest"
+              },
+              "examples": {
+                "typical": {
+                  "summary": "Standard refresh",
+                  "value": {
+                    "refreshToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST..."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New token pair issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                },
+                "example": {
+                  "accessToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaSS...",
+                  "refreshToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaSS...",
+                  "expiresIn": 900,
+                  "tokenType": "Bearer",
+                  "walletAddress": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or malformed refreshToken field",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 400,
+                  "message": ["refreshToken should not be empty"],
+                  "error": "Bad Request"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Refresh token is expired or has been revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 401,
+                  "message": "Refresh token is invalid or expired",
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refresh token belongs to a suspended account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 403,
+                  "message": "Account is not authorised",
+                  "error": "Forbidden"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/session": {
+      "delete": {
+        "tags": ["Authentication"],
+        "summary": "Revoke current session (logout)",
+        "description": "Revokes the JWT identified by the `jti` claim in the Bearer token, effectively ending the current session. Corresponds to POST /auth/logout in the NestJS controller.",
+        "operationId": "authDeleteSession",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session revoked — no content returned"
+          },
+          "401": {
+            "description": "No valid Bearer token provided",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 401,
+                  "message": "Unauthorized",
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token does not have permission to revoke this session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "statusCode": 403,
+                  "message": "Forbidden",
+                  "error": "Forbidden"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "tags": [
@@ -1347,10 +1650,299 @@
           }
         }
       }
+    },
+    "/api/webhooks/dead-letter": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "List webhook dead-letter entries (admin only)",
+        "description": "Paginated list of failed webhook deliveries that exhausted all retries, across all subscriptions. Supports filtering by tenant (the subscription owner's `createdBy` address — the closest existing field to a tenant identifier in this codebase) and by failure reason (substring match on the last error message).",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PageParam"
+          },
+          {
+            "$ref": "#/components/parameters/LimitParam"
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter by subscription owner (created_by) address"
+          },
+          {
+            "name": "failureReason",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Substring match against the last recorded error message"
+          },
+          {
+            "name": "resolved",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["true", "false"]
+            },
+            "description": "Filter by resolution status"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated dead-letter entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "entries": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/DeadLetterEntry"
+                          }
+                        },
+                        "pagination": {
+                          "$ref": "#/components/schemas/Pagination"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        }
+      }
+    },
+    "/api/webhooks/dead-letter/{id}/retry": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Retry a dead-lettered delivery (admin only)",
+        "description": "Re-enqueues the original payload for delivery with a fresh attempt counter (does not resume the exhausted counter that originally routed the entry to the dead-letter queue). Writes an audit log entry.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entry re-enqueued for delivery"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "Dead-letter entry or associated subscription not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Entry already resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/dead-letter/{id}": {
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Discard a dead-lettered delivery (admin only)",
+        "description": "Marks the dead-letter entry as archived without retrying delivery. Writes an audit log entry.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entry discarded"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "Dead-letter entry not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Entry already resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT access token obtained from POST /auth/verify or POST /auth/refresh"
+      }
+    },
     "schemas": {
+      "WalletAuthRequest": {
+        "type": "object",
+        "required": ["publicKey", "signature", "nonce"],
+        "properties": {
+          "publicKey": {
+            "type": "string",
+            "minLength": 56,
+            "maxLength": 56,
+            "pattern": "^G[A-Z2-7]{55}$",
+            "description": "Stellar wallet public key (G-address, 56 characters)",
+            "example": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+          },
+          "signature": {
+            "type": "string",
+            "description": "Ed25519 signature over the nonce, base64-encoded",
+            "example": "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ012="
+          },
+          "nonce": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The nonce value returned by POST /auth/challenge",
+            "example": "3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718"
+          }
+        }
+      },
+      "RefreshTokenRequest": {
+        "type": "object",
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "description": "A valid, non-expired JWT refresh token previously issued by POST /auth/verify or POST /auth/refresh",
+            "example": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST..."
+          }
+        }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "required": ["accessToken", "refreshToken", "expiresIn", "tokenType", "walletAddress"],
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "Short-lived JWT access token (Bearer). Valid for 15 minutes.",
+            "example": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST..."
+          },
+          "refreshToken": {
+            "type": "string",
+            "description": "Longer-lived JWT refresh token. Valid for 7 days.",
+            "example": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST..."
+          },
+          "expiresIn": {
+            "type": "integer",
+            "description": "Seconds until the access token expires.",
+            "example": 900
+          },
+          "tokenType": {
+            "type": "string",
+            "description": "Token type — always 'Bearer'.",
+            "example": "Bearer"
+          },
+          "walletAddress": {
+            "type": "string",
+            "description": "Stellar wallet address (G-address) of the authenticated user.",
+            "example": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+          }
+        }
+      },
+      "NonceResponse": {
+        "type": "object",
+        "required": ["nonce", "expiresAt", "message"],
+        "properties": {
+          "nonce": {
+            "type": "string",
+            "format": "uuid",
+            "description": "One-time nonce (UUID v4) to be signed by the wallet.",
+            "example": "3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "description": "Unix timestamp (seconds) at which the nonce expires.",
+            "example": 1719100800
+          },
+          "message": {
+            "type": "string",
+            "description": "Full challenge message that the wallet must sign.",
+            "example": "Sign this message to authenticate: 3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718"
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "properties": {
@@ -1797,6 +2389,73 @@
             "format": "date-time"
           }
         }
+      },
+      "DeadLetterEntry": {
+        "type": "object",
+        "description": "A webhook delivery that exhausted all retry attempts and was routed to the dead-letter store.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subscriptionId": {
+            "type": "string"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "token.burn.self",
+              "token.burn.admin",
+              "token.created",
+              "token.metadata.updated"
+            ]
+          },
+          "payload": {
+            "type": "string",
+            "description": "JSON-stringified original webhook payload"
+          },
+          "statusCode": {
+            "type": "integer",
+            "nullable": true
+          },
+          "lastError": {
+            "type": "string",
+            "nullable": true
+          },
+          "attemptCount": {
+            "type": "integer",
+            "description": "Attempts made before exhaustion (pre-retry)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resolvedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "retried",
+              "skipped",
+              "archived"
+            ],
+            "nullable": true
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Admin JWT issued for users with role 'admin' or 'super_admin'."
       }
     },
     "parameters": {

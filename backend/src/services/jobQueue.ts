@@ -16,6 +16,7 @@
  */
 
 import { register, Gauge, Counter, Histogram } from "prom-client";
+import { getCorrelationId, runWithContext } from "../lib/async-context";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,8 @@ export interface Job<T = unknown> {
   runAt: Date; // earliest time the job may be picked up
   startedAt?: Date;
   error?: string;
+  /** Correlation ID from the originating HTTP request, for distributed tracing. */
+  correlationId?: string;
 }
 
 export type JobHandler<T = unknown> = (job: Job<T>) => Promise<void>;
@@ -115,6 +118,7 @@ export class JobQueue {
   private activeWorkers = 0;
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private recurringTimers = new Map<string, ReturnType<typeof setInterval>>();
 
   /** Counts for completed/failed (kept separately to avoid unbounded arrays). */
   private completedCount = 0;
@@ -162,6 +166,7 @@ export class JobQueue {
       status: "pending",
       createdAt: new Date(),
       runAt: new Date(Date.now() + (opts.delayMs ?? 0)),
+      correlationId: getCorrelationId(),
     };
 
     this.pending.push(job);
@@ -188,6 +193,35 @@ export class JobQueue {
     }
   }
 
+  /**
+   * Enqueue a job of `type` on a recurring `intervalMs` cadence.
+   * Calling this again for a `type` that's already scheduled is a no-op —
+   * use `stopRecurring` first to change the interval.
+   */
+  scheduleRecurring<T>(
+    type: string,
+    payload: T,
+    intervalMs: number,
+    opts: EnqueueOptions = {}
+  ): void {
+    if (this.recurringTimers.has(type)) return;
+
+    const timer = setInterval(() => {
+      this.enqueue(type, payload, opts);
+    }, intervalMs);
+    timer.unref?.();
+    this.recurringTimers.set(type, timer);
+  }
+
+  /** Stop a recurring schedule previously started with `scheduleRecurring`. */
+  stopRecurring(type: string): void {
+    const timer = this.recurringTimers.get(type);
+    if (timer) {
+      clearInterval(timer);
+      this.recurringTimers.delete(type);
+    }
+  }
+
   /** Current queue statistics. */
   stats(): QueueStats {
     return {
@@ -202,6 +236,73 @@ export class JobQueue {
   /** Jobs in the dead-letter list (exhausted all retries). */
   deadLetterJobs(): Job[] {
     return [...this.dead];
+  }
+
+  /**
+   * Return failed (dead-letter) jobs with optional filters.
+   * Filters: jobType, errorCode (substring match on error message), startDate, endDate.
+   */
+  failedJobs(filters: {
+    jobType?: string;
+    errorCode?: string;
+    startDate?: Date;
+    endDate?: Date;
+  } = {}): Job[] {
+    let jobs = [...this.dead];
+
+    if (filters.jobType) {
+      jobs = jobs.filter((j) => j.type === filters.jobType);
+    }
+    if (filters.errorCode) {
+      const needle = filters.errorCode.toLowerCase();
+      jobs = jobs.filter((j) => j.error?.toLowerCase().includes(needle));
+    }
+    if (filters.startDate) {
+      jobs = jobs.filter((j) => j.createdAt >= filters.startDate!);
+    }
+    if (filters.endDate) {
+      jobs = jobs.filter((j) => j.createdAt <= filters.endDate!);
+    }
+
+    return jobs;
+  }
+
+  /**
+   * Re-enqueue a dead-letter job: reset its retry counter and enqueue with
+   * high priority so it runs as soon as a worker is free.
+   * Returns the job, or null if no dead-letter job with that id exists.
+   */
+  retryJob(id: string): Job | null {
+    const idx = this.dead.findIndex((j) => j.id === id);
+    if (idx === -1) return null;
+
+    const [job] = this.dead.splice(idx, 1);
+
+    // Reset state for fresh execution
+    job.attempts = 0;
+    job.status = "pending";
+    job.runAt = new Date();
+    job.error = undefined;
+    // Elevate priority so the retry runs before normal-priority work
+    job.priority = Math.max(job.priority, 10);
+
+    this.pending.push(job);
+    this.pending.sort((a, b) => b.priority - a.priority);
+
+    this.updateMetrics();
+    this.scheduleTick();
+    return job;
+  }
+
+  /**
+   * Permanently discard a job from the dead-letter list.
+   * Returns true if the job was found and removed, false otherwise.
+   */
+  discardJob(id: string): boolean {
+    const idx = this.dead.findIndex((j) => j.id === id);
+    if (idx === -1) return false;
+    this.dead.splice(idx, 1);
+    return true;
   }
 
   /** Number of currently active workers. */
@@ -264,8 +365,14 @@ export class JobQueue {
     const handler = this.handlers.get(job.type)!;
     const startTime = Date.now();
 
+    // Wrap execution in the originating request's correlation ID context so that
+    // all logs emitted inside the handler carry the same correlationId.
+    const runHandler = job.correlationId
+      ? () => runWithContext(job.correlationId!, () => handler(job))
+      : () => handler(job);
+
     try {
-      await handler(job);
+      await runHandler();
       job.status = "completed";
       this.completedCount++;
       const duration = (Date.now() - startTime) / 1000;

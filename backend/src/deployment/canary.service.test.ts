@@ -1,10 +1,10 @@
 /**
  * Unit tests — CanaryDeploymentService
- * Issue: #895
+ * Issue: #895, #1350
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { CanaryDeploymentService, type CanaryMetrics } from './canary.service';
+import { CanaryDeploymentService, type CanaryMetrics, type CanaryRolledBackPayload } from './canary.service';
 
 vi.mock('../../monitoring/logging/structured-logger', () => ({
   structuredLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -128,5 +128,123 @@ describe('CanaryDeploymentService', () => {
     await vi.runAllTimersAsync();
     await svc.start('v3', 'v2');
     expect(svc.getState().stage).toBe('observing');
+  });
+
+  // ── Issue #1350: event emission, weight reset, rollbackCanary ─────────────
+
+  it('emits deployment.canary.rolled_back event on automatic rollback', async () => {
+    await svc.start('v2-canary', 'v1-stable');
+
+    const listener = vi.fn();
+    svc.on('deployment.canary.rolled_back', listener);
+
+    await svc.evaluateMetrics({ ...healthyMetrics(), errorRate: 10 });
+
+    expect(listener).toHaveBeenCalledOnce();
+    const payload: CanaryRolledBackPayload = listener.mock.calls[0][0];
+    expect(payload.deploymentId).toBe('v2-canary');
+    expect(payload.reason).toContain('error rate');
+    expect(typeof payload.errorRate).toBe('number');
+  });
+
+  it('emits deployment.canary.rolled_back with correct errorRate in payload', async () => {
+    await svc.start('v3-canary', 'v2-stable');
+
+    const listener = vi.fn();
+    svc.on('deployment.canary.rolled_back', listener);
+
+    const spikeErrorRate = 12.5;
+    await svc.evaluateMetrics({ ...healthyMetrics(), errorRate: spikeErrorRate });
+
+    const payload: CanaryRolledBackPayload = listener.mock.calls[0][0];
+    expect(payload.errorRate).toBe(spikeErrorRate);
+  });
+
+  it('emits deployment.canary.rolled_back on manual rollbackCanary call', async () => {
+    await svc.start('v4-canary', 'v3-stable');
+
+    const listener = vi.fn();
+    svc.on('deployment.canary.rolled_back', listener);
+
+    await svc.rollbackCanary('manual intervention');
+
+    expect(listener).toHaveBeenCalledOnce();
+    const payload: CanaryRolledBackPayload = listener.mock.calls[0][0];
+    expect(payload.deploymentId).toBe('v4-canary');
+    expect(payload.reason).toBe('manual intervention');
+  });
+
+  it('sets weight to 0 after error rate spike triggers rollback', async () => {
+    await svc.start('v2', 'v1');
+    expect(svc.getWeight()).toBe(10); // initial weight
+
+    await svc.evaluateMetrics({ ...healthyMetrics(), errorRate: 10 });
+
+    expect(svc.getWeight()).toBe(0);
+  });
+
+  it('sets weight to 0 after manual rollbackCanary', async () => {
+    await svc.start('v2', 'v1');
+    await svc.rollbackCanary('manual override');
+
+    expect(svc.getWeight()).toBe(0);
+  });
+
+  it('rollbackCanary transitions stage to rolled_back', async () => {
+    await svc.start('v2', 'v1');
+    await svc.rollbackCanary('external trigger');
+
+    const state = svc.getState();
+    expect(state.stage).toBe('rolled_back');
+    expect(state.rollbackReason).toBe('external trigger');
+  });
+
+  it('getWeight returns the configured initial weight before rollback', async () => {
+    const customSvc = new CanaryDeploymentService({ weight: 25 });
+    expect(customSvc.getWeight()).toBe(25);
+  });
+
+  it('error rate spike → automatic rollback → weight 0 → event emitted (integration)', async () => {
+    const events: CanaryRolledBackPayload[] = [];
+    svc.on('deployment.canary.rolled_back', (p: CanaryRolledBackPayload) => events.push(p));
+
+    await svc.start('canary-v5', 'stable-v4');
+    expect(svc.getWeight()).toBe(10);
+    expect(svc.getState().stage).toBe('observing');
+
+    // Simulate error rate spike above 5% threshold
+    await svc.evaluateMetrics({ ...healthyMetrics(), errorRate: 8 });
+
+    expect(svc.getState().stage).toBe('rolled_back');
+    expect(svc.getWeight()).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0].deploymentId).toBe('canary-v5');
+    expect(events[0].errorRate).toBe(8);
+    expect(events[0].reason).toContain('error rate');
+  });
+
+  it('startMetricsPolling polls the provider and triggers rollback on high error rate', async () => {
+    await svc.start('v2', 'v1');
+
+    const rollbackListener = vi.fn();
+    svc.on('deployment.canary.rolled_back', rollbackListener);
+
+    let callCount = 0;
+    const provider = vi.fn(async (): Promise<CanaryMetrics> => {
+      callCount++;
+      // First call returns spiked error rate
+      return { ...healthyMetrics(), errorRate: callCount === 1 ? 15 : 0.5 };
+    });
+
+    svc.startMetricsPolling(provider);
+
+    // Advance one polling interval (30s)
+    vi.advanceTimersByTime(30_000);
+    await vi.runAllTimersAsync();
+
+    expect(provider).toHaveBeenCalledOnce();
+    expect(svc.getState().stage).toBe('rolled_back');
+    expect(svc.getWeight()).toBe(0);
+    expect(rollbackListener).toHaveBeenCalledOnce();
   });
 });

@@ -31,6 +31,7 @@ export interface SearchFilters {
   minSupply?: string;
   maxSupply?: string;
   hasBurns?: "true" | "false";
+  fuzzy?: "true" | "false";
   sortBy: "created" | "burned" | "supply" | "name";
   sortOrder: "asc" | "desc";
 }

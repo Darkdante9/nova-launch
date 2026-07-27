@@ -5,8 +5,12 @@ import {
   HealthCheckResult,
   DetailedHealthCheckResult,
   HealthCheckOptions,
+  DEFAULT_DEPENDENCY_GRAPH,
+  ServiceDependencyGraph,
 } from "./health.types";
 import { validateEnv } from "../../config/env";
+import { getCircuitBreakerRegistrySnapshot } from "../circuitBreaker";
+import { dispatchAlert } from "../../../../monitoring/pagerduty/incident-response";
 
 const _env = validateEnv();
 
@@ -104,15 +108,80 @@ export class HealthService {
     }
 
     const basicHealth = await this.checkHealth(options);
+    const services = { ...basicHealth.services };
+    const rootCauses = this.applyCascadingFailures(services, DEFAULT_DEPENDENCY_GRAPH);
+
+    // Alert PagerDuty once per root cause (#1373)
+    for (const svcName of rootCauses) {
+      try {
+        await dispatchAlert(
+          `health.service.${svcName}`,
+          "critical",
+          { service: svcName, message: (services as any)[svcName]?.error ?? "service down" }
+        );
+      } catch {
+        // Non-fatal — alerting must not block the health response
+      }
+    }
+
     const metrics = await this.collectMetrics();
+    const circuitBreakers = getCircuitBreakerRegistrySnapshot();
 
     const result: DetailedHealthCheckResult = {
       ...basicHealth,
+      services,
       metrics,
+      circuitBreakers,
+      rootCauses,
     };
 
     this.cache.set<DetailedHealthCheckResult>(cacheKey, result);
     return result;
+  }
+
+  /**
+   * Traverse the dependency graph and mark downstream services as cascaded.
+   * Returns the list of root-cause service names (failed on their own).
+   */
+  applyCascadingFailures(
+    services: Record<string, ServiceHealth>,
+    graph: ServiceDependencyGraph = DEFAULT_DEPENDENCY_GRAPH
+  ): string[] {
+    const rootCauses: string[] = [];
+
+    for (const [upstream, dependents] of Object.entries(graph)) {
+      const upstreamHealth = services[upstream];
+      if (!upstreamHealth || upstreamHealth.status === "up") continue;
+
+      // This upstream service is a root cause
+      rootCauses.push(upstream);
+
+      for (const dep of dependents) {
+        const depHealth = services[dep];
+        if (!depHealth) continue;
+        // Only mark as cascaded if it hasn't already failed on its own
+        if (depHealth.status !== "up" && !depHealth.cascaded) {
+          depHealth.cascaded = true;
+          depHealth.rootCause = upstream;
+        } else if (depHealth.status === "up") {
+          // Cascade the failure down — this dependency is impacted even if
+          // its own check succeeded (the check may not reflect the runtime impact yet)
+          depHealth.status = "degraded";
+          depHealth.cascaded = true;
+          depHealth.rootCause = upstream;
+          depHealth.message = `Cascaded failure from ${upstream}`;
+        }
+      }
+    }
+
+    // Any failing service not already marked cascaded is a root cause
+    for (const [name, svc] of Object.entries(services)) {
+      if (svc.status !== "up" && !svc.cascaded && !rootCauses.includes(name)) {
+        rootCauses.push(name);
+      }
+    }
+
+    return [...new Set(rootCauses)];
   }
 
   /**

@@ -13,6 +13,11 @@
 process.env.WEBHOOK_MAX_RETRIES = '1';
 process.env.WEBHOOK_TIMEOUT_MS = '500';
 process.env.WEBHOOK_RETRY_DELAY_MS = '0';
+// This test fans out to 20+ subscribers sharing one createdBy/"tenant" —
+// raise the per-tenant rate-limit bucket so the storm volume here (which is
+// about fan-out correctness, not rate limiting) is never queued.
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = '100000';
+process.env.WEBHOOK_RATE_LIMIT_BURST = '10000';
 
 import nock from 'nock';
 import { describe, it, beforeEach, afterEach, vi, expect } from 'vitest';

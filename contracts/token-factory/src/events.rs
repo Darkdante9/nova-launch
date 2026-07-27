@@ -47,7 +47,7 @@
 ///
 /// Any schema changes require creating a new version (e.g., init_v2).
 
-use soroban_sdk::{symbol_short, Address, BytesN, Env, String};
+use soroban_sdk::{symbol_short, Address, BytesN, Env, String, Symbol};
 
 /// Emit initialized event (v1)
 ///
@@ -253,6 +253,101 @@ pub fn emit_fees_updated_v2(env: &Env, admin: &Address, base_fee: i128, metadata
         .publish((symbol_short!("fee_up_v2"),), (admin.clone(), base_fee, metadata_fee));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Fee Update Governance Events (#1385)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Direct admin fee updates have been removed. Fee changes must now flow
+// through the governance proposal system (propose -> vote -> quorum check
+// -> queue -> timelock -> execute). These events are emitted specifically
+// for `ActionType::FeeChange` proposals, in addition to the generic
+// proposal lifecycle events, so downstream indexers can track fee
+// governance without having to decode the generic payload.
+
+/// Emit fee update proposed event (v1)
+///
+/// Published when a governance proposal of type `FeeChange` is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: fe_pr_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "fe_pr_v1"
+/// - proposal_id: u64
+///
+/// **Payload** (non-indexed):
+/// - proposer: Address - Address that created the proposal
+/// - base_fee: i128 - Proposed new base fee in stroops
+/// - metadata_fee: i128 - Proposed new metadata fee in stroops
+/// - eta: u64 - Earliest timestamp at which the proposal may execute (post-timelock)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fee_update_proposed(
+    env: &Env,
+    proposal_id: u64,
+    proposer: &Address,
+    base_fee: i128,
+    metadata_fee: i128,
+    eta: u64,
+) {
+    env.events().publish(
+        (symbol_short!("fe_pr_v1"), proposal_id),
+        (proposer.clone(), base_fee, metadata_fee, eta),
+    );
+}
+
+/// Emit fee update queued event (v1)
+///
+/// Published when a `FeeChange` proposal passes quorum/approval and is
+/// queued into the timelock, awaiting `eta` before it can execute.
+///
+/// **Schema Version**: 1
+/// **Event Name**: fe_qu_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "fe_qu_v1"
+/// - proposal_id: u64
+///
+/// **Payload** (non-indexed):
+/// - eta: u64 - Earliest timestamp at which the proposal may execute
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fee_update_queued(env: &Env, proposal_id: u64, eta: u64) {
+    env.events()
+        .publish((symbol_short!("fe_qu_v1"), proposal_id), (eta,));
+}
+
+/// Emit fee update executed event (v1)
+///
+/// Published when a queued `FeeChange` proposal's timelock has elapsed and
+/// the fee change has been applied to contract storage.
+///
+/// **Schema Version**: 1
+/// **Event Name**: fe_ex_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "fe_ex_v1"
+/// - proposal_id: u64
+///
+/// **Payload** (non-indexed):
+/// - executor: Address - Address that triggered execution (the original proposer)
+/// - base_fee: i128 - New base fee now in effect, in stroops
+/// - metadata_fee: i128 - New metadata fee now in effect, in stroops
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fee_update_executed(
+    env: &Env,
+    proposal_id: u64,
+    executor: &Address,
+    base_fee: i128,
+    metadata_fee: i128,
+) {
+    env.events().publish(
+        (symbol_short!("fe_ex_v1"), proposal_id),
+        (executor.clone(), base_fee, metadata_fee),
+    );
+}
+
 /// Emit admin burn event (v1)
 ///
 /// **Schema Version**: 1
@@ -307,10 +402,10 @@ pub fn emit_clawback_toggled(env: &Env, token_address: &Address, admin: &Address
 /// Emit clawback audit event (v1) - #1149
 ///
 /// **Schema Version**: 1
-/// **Event Name**: clawb_au_v1
+/// **Event Name**: clawb_au1
 ///
 /// **Topics** (indexed):
-/// - Event name: "clawb_au_v1"
+/// - Event name: "clawb_au1"
 /// - token_address: Address - The token contract address
 ///
 /// **Payload** (non-indexed):
@@ -329,7 +424,7 @@ pub fn emit_clawback_audit(
     amount: i128,
 ) {
     env.events().publish(
-        (symbol_short!("clawb_au_v1"), token_address.clone()),
+        (symbol_short!("clwb_au1"), token_address.clone()),
         (actor.clone(), target.clone(), amount),
     );
 }
@@ -415,6 +510,41 @@ pub fn emit_treasury_updated(env: &Env, new_treasury: &Address) {
 pub fn emit_mint(env: &Env, token_index: u32, to: &Address, amount: i128) {
     env.events()
         .publish((symbol_short!("mint"), token_index), (to, amount));
+}
+
+/// Emit a per-item success event for an isolated batch mint (#1360).
+///
+/// Topic `mnt_ok` corresponds to a `MintSucceeded` outcome. `index` is the
+/// item's position in the input batch.
+pub fn emit_mint_succeeded(
+    env: &Env,
+    token_index: u32,
+    index: u32,
+    to: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("mnt_ok"), token_index),
+        (index, to, amount),
+    );
+}
+
+/// Emit a per-item failure event for an isolated batch mint (#1360).
+///
+/// Topic `mnt_fail` corresponds to a `MintFailed` outcome. `error_code` is the
+/// contract error code that caused this item to be isolated out of the batch.
+pub fn emit_mint_failed(
+    env: &Env,
+    token_index: u32,
+    index: u32,
+    to: &Address,
+    amount: i128,
+    error_code: u32,
+) {
+    env.events().publish(
+        (symbol_short!("mnt_fail"), token_index),
+        (index, to, amount, error_code),
+    );
 }
 
 // ── Treasury events ─────────────────────────────────────────
@@ -725,6 +855,22 @@ pub fn emit_stream_cancelled(
     );
 }
 
+/// Emit stream cancelled with settlement event
+///
+/// Emitted when a stream is cancelled and the vested portion is settled to the recipient.
+pub fn emit_stream_cancelled_with_settlement(
+    env: &Env,
+    stream_id: u32,
+    canceller: &Address,
+    vested_to_recipient: i128,
+    unvested_to_creator: i128,
+) {
+    env.events().publish(
+        (symbol_short!("strm_cxs"), stream_id),
+        (canceller, vested_to_recipient, unvested_to_creator),
+    );
+}
+
 /// Emit stream dispute raised event
 pub fn emit_stream_dispute_raised(env: &Env, stream_id: u32, caller: &Address) {
     env.events().publish(
@@ -838,10 +984,10 @@ pub fn emit_proposal_executed(
 /// Emit proposal executable event
 ///
 /// Published when a proposal's timelock delay has elapsed and it is ready to execute.
-/// Topics: ("prp_rdy_v1", proposal_id). Payload: (eta,).
+/// Topics: ("prp_rdy1", proposal_id). Payload: (eta,).
 pub fn emit_proposal_executable(env: &Env, proposal_id: u64, eta: u64) {
     env.events().publish(
-        (symbol_short!("prp_rdy_v1"), proposal_id),
+        (symbol_short!("prp_rdy1"), proposal_id),
         (eta,),
     );
 }
@@ -851,6 +997,46 @@ pub fn emit_proposal_cancelled(env: &Env, proposal_id: u64, cancelled_by: &Addre
     env.events().publish(
         (symbol_short!("prop_cncl"), proposal_id),
         (cancelled_by,),
+    );
+}
+
+/// Emit a governance proposal state snapshot event (#1383).
+///
+/// Published periodically (every `SNAPSHOT_INTERVAL_LEDGERS` ledgers, see
+/// `governance::SNAPSHOT_INTERVAL_LEDGERS`) for every active proposal, and on
+/// demand via the `snapshot_proposals` entry point. Off-chain indexers can
+/// use these snapshots as checkpoints: instead of replaying every event from
+/// genesis, a consumer can start from the most recent snapshot for a
+/// proposal and only replay events emitted after it, while still arriving at
+/// state that is fully consistent with the accumulated event stream.
+///
+/// **Schema Version**: 1
+/// **Event Name**: prop_snap
+///
+/// **Topics** (indexed):
+/// - Event name: "prop_snap"
+/// - proposal_id: u64 - The proposal this snapshot describes
+///
+/// **Payload** (non-indexed):
+/// - status: ProposalState - The proposal's state at snapshot time
+/// - yes_votes: i128 - Accumulated "for" votes at snapshot time
+/// - no_votes: i128 - Accumulated "against" votes at snapshot time
+/// - quorum_required: i128 - The vote weight required to meet quorum at snapshot time
+/// - ledger: u32 - The ledger sequence at which the snapshot was taken
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_proposal_state_snapshot(
+    env: &Env,
+    proposal_id: u64,
+    status: crate::types::ProposalState,
+    yes_votes: i128,
+    no_votes: i128,
+    quorum_required: i128,
+    ledger: u32,
+) {
+    env.events().publish(
+        (symbol_short!("prop_snap"), proposal_id),
+        (status, yes_votes, no_votes, quorum_required, ledger),
     );
 }
 
@@ -883,8 +1069,40 @@ pub fn emit_queue_entry_removed(
     );
 }
 
+/// Emit a per-type FIFO queue entry-added event (#1366).
+///
+/// Published when a proposal is appended to its action-type FIFO execution
+/// queue. Topics: ("tq_add", proposal_id). Payload: (action_type, position).
+pub fn emit_type_queue_entry_added(
+    env: &Env,
+    proposal_id: u64,
+    action_type: crate::types::ActionType,
+    position: u32,
+) {
+    env.events().publish(
+        (symbol_short!("tq_add"), proposal_id),
+        (action_type, position),
+    );
+}
+
+/// Emit a per-type FIFO queue entry-removed event (#1366).
+///
+/// Published when a proposal is removed from its action-type FIFO queue,
+/// either because it executed or was cancelled.
+/// Topics: ("tq_rem", proposal_id). Payload: (action_type,).
+pub fn emit_type_queue_entry_removed(
+    env: &Env,
+    proposal_id: u64,
+    action_type: crate::types::ActionType,
+) {
+    env.events().publish(
+        (symbol_short!("tq_rem"), proposal_id),
+        (action_type,),
+    );
+}
+
 /// Emit enriched error detail event
-/// 
+///
 /// **Event Name**: err_det
 /// 
 /// **Topics** (indexed):
@@ -945,6 +1163,56 @@ pub fn emit_vault_cancelled(env: &Env, vault_id: u64, actor: &Address, remaining
     env.events().publish(
         (symbol_short!("vlt_cnl"), vault_id),
         (actor.clone(), remaining_amount),
+    );
+}
+
+/// Emit a structured `OperationFailed` event for a rejected vault operation (#1384).
+///
+/// **Event Name**: vlt_fail
+///
+/// **Topics** (indexed):
+/// - Event name: "vlt_fail"
+/// - vault_id: u64 - The vault the failed operation targeted (`u64::MAX` if the
+///   vault id was not yet known, e.g. on `create_vault` failures before a vault
+///   is allocated).
+///
+/// **Payload** (non-indexed):
+/// - error_code: u32 - The numeric `Error` discriminant returned to the caller.
+///   This is the same code surfaced as the Wasm ABI contract error; Soroban's
+///   on-chain error return path only supports a flat `u32`, so this event is
+///   the mechanism by which richer diagnostic context travels off-chain.
+/// - error_name: Symbol - Stable string representation of the error variant
+///   (see `Error::name()`). Indexers should key off this name rather than the
+///   numeric code where possible, since the name is documented to remain
+///   stable for a given variant.
+/// - amount: i128 - The amount affected by the failed operation (e.g. the
+///   claim/fund/transfer amount). `0` when the operation has no associated
+///   amount (e.g. milestone verification).
+/// - condition: Symbol - Short machine-readable description of the specific
+///   failing condition (e.g. "cliff_not_met", "not_owner"), distinct from the
+///   error name so indexers can disambiguate the many call sites that share a
+///   generic error code (e.g. `InvalidParameters`) by operation semantics.
+///
+/// **Schema Stability**: This schema is immutable once deployed. Any change
+/// requires a new versioned event (e.g. `vlt_fail_v2`).
+///
+/// Emitted immediately before every vault entry point (`create_vault`,
+/// `claim_vault`, `cancel_vault`, `verify_milestone`,
+/// `propose_vault_owner_change`, `approve_vault_owner_change`) returns an
+/// error, so off-chain indexers such as `vaultEventParser.ts` can build
+/// rich, typed error messages without hardcoding numeric-to-meaning mappings.
+pub fn emit_operation_failed(
+    env: &Env,
+    vault_id: u64,
+    error: crate::types::Error,
+    amount: i128,
+    condition: &str,
+) {
+    let error_name = soroban_sdk::Symbol::new(env, error.name());
+    let condition_sym = soroban_sdk::Symbol::new(env, condition);
+    env.events().publish(
+        (symbol_short!("vlt_fail"), vault_id),
+        (error.0, error_name, amount, condition_sym),
     );
 }
 
@@ -1171,10 +1439,10 @@ pub fn emit_commission_paid(env: &Env, referrer: &Address, token_index: u32, amo
 /// Emit role granted event (v1)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: role_gr_v1
+/// **Event Name**: role_gr1
 ///
 /// **Topics** (indexed):
-/// - Event name: "role_gr_v1"
+/// - Event name: "role_gr1"
 /// - token_index: u32 - The token this role applies to
 ///
 /// **Payload** (non-indexed):
@@ -1191,7 +1459,7 @@ pub fn emit_role_granted(
     role: crate::types::Role,
 ) {
     env.events().publish(
-        (symbol_short!("role_gr_v1"), token_index),
+        (symbol_short!("role_gr1"), token_index),
         (creator.clone(), grantee.clone(), role),
     );
 }
@@ -1199,10 +1467,10 @@ pub fn emit_role_granted(
 /// Emit role revoked event (v1)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: role_rv_v1
+/// **Event Name**: role_rv1
 ///
 /// **Topics** (indexed):
-/// - Event name: "role_rv_v1"
+/// - Event name: "role_rv1"
 /// - token_index: u32 - The token this role applies to
 ///
 /// **Payload** (non-indexed):
@@ -1219,7 +1487,7 @@ pub fn emit_role_revoked(
     role: crate::types::Role,
 ) {
     env.events().publish(
-        (symbol_short!("role_rv_v1"), token_index),
+        (symbol_short!("role_rv1"), token_index),
         (creator.clone(), revokee.clone(), role),
     );
 }
@@ -1245,10 +1513,10 @@ pub fn emit_commission_rate_updated(env: &Env, admin: &Address, rate_bps: u32) {
 /// Emit treasury policy initialized event (v1)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: trs_ini_v1
+/// **Event Name**: trs_ini1
 ///
 /// **Topics** (indexed):
-/// - Event name: "trs_ini_v1"
+/// - Event name: "trs_ini1"
 ///
 /// **Payload** (non-indexed):
 /// - daily_cap: i128 - The daily withdrawal cap in stroops
@@ -1257,7 +1525,7 @@ pub fn emit_commission_rate_updated(env: &Env, admin: &Address, rate_bps: u32) {
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_treasury_policy_initialized(env: &Env, daily_cap: i128, allowlist_enabled: bool) {
     env.events()
-        .publish((symbol_short!("trs_ini_v1"),), (daily_cap, allowlist_enabled));
+        .publish((symbol_short!("trs_ini1"),), (daily_cap, allowlist_enabled));
 }
 
 /// Emit dynamic quorum configured event (v1)
@@ -1292,6 +1560,42 @@ pub fn emit_dynamic_quorum_configured(
 pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Address) {
     env.events()
         .publish((symbol_short!("adm_cxl"),), (admin.clone(), cancelled_pending.clone()));
+}
+
+/// Emit AdminTransferProposed event (two-step transfer - step 1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: adm_prp_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "adm_prp_v1"
+///
+/// **Payload** (non-indexed):
+/// - current_admin: Address - The admin proposing the transfer
+/// - new_admin: Address - The proposed new admin
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admin: &Address) {
+    env.events()
+        .publish((symbol_short!("adm_prp_v1"),), (current_admin.clone(), new_admin.clone()));
+}
+
+/// Emit AdminTransferAccepted event (two-step transfer - step 2)
+///
+/// **Schema Version**: 1
+/// **Event Name**: adm_acc_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "adm_acc_v1"
+///
+/// **Payload** (non-indexed):
+/// - old_admin: Address - The previous admin
+/// - new_admin: Address - The new admin who accepted
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &Address) {
+    env.events()
+        .publish((symbol_short!("adm_acc_v1"),), (old_admin.clone(), new_admin.clone()));
 }
 
 /// Emit trusted caller registered event
@@ -1386,7 +1690,7 @@ pub fn emit_vault_owner_changed(
 /// Emitted when a new distribution round is initiated.
 ///
 /// **Schema Version**: 1
-/// **Event Name**: div_ini_v1
+/// **Event Name**: div_ini1
 ///
 /// **Topics** (indexed):
 /// - distribution_id: u32
@@ -1409,7 +1713,7 @@ pub fn emit_distribution_initiated(
     claim_deadline_ledger: u32,
 ) {
     env.events().publish(
-        (symbol_short!("div_ini_v1"), distribution_id),
+        (symbol_short!("div_ini1"), distribution_id),
         (admin, token_index, asset, total_amount, snapshot_ledger, claim_deadline_ledger),
     );
 }
@@ -1417,7 +1721,7 @@ pub fn emit_distribution_initiated(
 /// Emitted when a holder claims their dividend share.
 ///
 /// **Schema Version**: 1
-/// **Event Name**: div_clm_v1
+/// **Event Name**: div_clm1
 ///
 /// **Topics** (indexed):
 /// - distribution_id: u32
@@ -1432,7 +1736,7 @@ pub fn emit_dividend_claimed(
     amount: i128,
 ) {
     env.events().publish(
-        (symbol_short!("div_clm_v1"), distribution_id),
+        (symbol_short!("div_clm1"), distribution_id),
         (holder, amount),
     );
 }
@@ -1440,7 +1744,7 @@ pub fn emit_dividend_claimed(
 /// Emitted when the admin reclaims unclaimed dividends after the window closes.
 ///
 /// **Schema Version**: 1
-/// **Event Name**: div_rcl_v1
+/// **Event Name**: div_rcl1
 ///
 /// **Topics** (indexed):
 /// - distribution_id: u32
@@ -1455,7 +1759,61 @@ pub fn emit_dividend_reclaimed(
     reclaimed_amount: i128,
 ) {
     env.events().publish(
-        (symbol_short!("div_rcl_v1"), distribution_id),
+        (symbol_short!("div_rcl1"), distribution_id),
         (admin, reclaimed_amount),
     );
+}
+
+/// Emitted when the cross-contract multisig signer set/threshold is configured.
+///
+/// **Schema Version**: 1
+/// **Event Name**: ms_cfg_v1
+pub fn emit_multisig_configured(env: &Env, admin: &Address, threshold: u32, signer_count: u32) {
+    env.events().publish(
+        (symbol_short!("ms_cfg_v1"),),
+        (admin, threshold, signer_count),
+    );
+}
+
+/// Emitted when a new multisig proposal is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: ms_prp_v1
+pub fn emit_multisig_proposed(env: &Env, proposal_id: u64, proposer: &Address) {
+    env.events()
+        .publish((symbol_short!("ms_prp_v1"), proposal_id), (proposer,));
+}
+
+/// Emitted when a signer approves a multisig proposal.
+///
+/// **Schema Version**: 1
+/// **Event Name**: ms_apr_v1
+pub fn emit_multisig_approved(
+    env: &Env,
+    proposal_id: u64,
+    approver: &Address,
+    approval_count: u32,
+) {
+    env.events().publish(
+        (symbol_short!("ms_apr_v1"), proposal_id),
+        (approver, approval_count),
+    );
+}
+
+/// Emitted when a multisig proposal is cancelled.
+///
+/// **Schema Version**: 1
+/// **Event Name**: ms_cnl_v1
+pub fn emit_multisig_cancelled(env: &Env, proposal_id: u64, canceller: &Address) {
+    env.events()
+        .publish((symbol_short!("ms_cnl_v1"), proposal_id), (canceller,));
+}
+
+/// Emitted when a multisig proposal is executed.
+///
+/// **Schema Version**: 1
+/// **Event Name**: ms_exe_v1
+pub fn emit_multisig_executed(env: &Env, proposal_id: u64, executor: &Address) {
+    env.events()
+        .publish((symbol_short!("ms_exe_v1"), proposal_id), (executor,));
 }

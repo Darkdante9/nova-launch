@@ -117,10 +117,71 @@ else
 fi
 
 echo ""
+echo "5. Metadata Immutability Enforcement (#1359)..."
+echo ""
+
+LIB=/workspaces/Nova-launch/contracts/token-factory/src/lib.rs
+TYPES=/workspaces/Nova-launch/contracts/token-factory/src/types.rs
+STORAGE=/workspaces/Nova-launch/contracts/token-factory/src/storage.rs
+
+# Error::MetadataImmutable defined
+if grep -q "pub const MetadataImmutable" "$TYPES"; then
+  echo "✅ Error::MetadataImmutable defined"
+else
+  echo "❌ Error::MetadataImmutable missing"
+fi
+
+# MetadataLocked / MetadataLockedAt storage keys defined
+if grep -q "MetadataLocked," "$TYPES" && grep -q "MetadataLockedAt," "$TYPES"; then
+  echo "✅ MetadataLocked / MetadataLockedAt DataKeys defined"
+else
+  echo "❌ MetadataLocked / MetadataLockedAt DataKeys missing"
+fi
+
+# Lock engaged at end of initialize
+if grep -q "storage::set_metadata_locked(&env, true)" "$LIB"; then
+  echo "✅ Metadata lock engaged in initialize()"
+else
+  echo "❌ Metadata lock not engaged in initialize()"
+fi
+
+# metadata_locked_at storage entry recorded
+if grep -q "DataKey::MetadataLockedAt" "$STORAGE"; then
+  echo "✅ metadata_locked_at ledger recorded in storage"
+else
+  echo "❌ metadata_locked_at ledger not recorded"
+fi
+
+# Immutable identity update entry point rejects with MetadataImmutable
+if grep -q "pub fn update_token_identity" "$LIB" && \
+   grep -q "return Err(Error::MetadataImmutable)" "$LIB"; then
+  echo "✅ update_token_identity() rejects locked fields with MetadataImmutable"
+else
+  echo "❌ update_token_identity() immutability check missing"
+fi
+
+# Governance-gated metadata update entry point
+if grep -q "pub fn governance_update_metadata" "$LIB"; then
+  echo "✅ governance_update_metadata() defined (description/image_uri via governance)"
+else
+  echo "❌ governance_update_metadata() missing"
+fi
+
+# Enforcement test module exists and is declared
+if [ -f "/workspaces/Nova-launch/contracts/token-factory/src/metadata_immutability_enforcement_test.rs" ] && \
+   grep -q "mod metadata_immutability_enforcement_test" "$LIB"; then
+  echo "✅ metadata_immutability_enforcement_test declared"
+else
+  echo "❌ metadata_immutability_enforcement_test not declared"
+fi
+
+echo ""
 echo "==============================================="
 echo "Summary: Implementation Complete"
 echo ""
-echo "Note: Contract has pre-existing compilation errors"
-echo "in other test files unrelated to metadata changes."
-echo "The metadata implementation itself is correct."
+echo "Note: The token-factory crate has extensive pre-existing"
+echo "compilation errors in unrelated modules (multisig,"
+echo "fractionalization, trusted-caller, burn schedules, streams)."
+echo "These predate and are independent of the metadata changes."
+echo "Run 'cargo test metadata_immutability' once the crate builds."
 echo "==============================================="

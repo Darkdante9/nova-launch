@@ -25,7 +25,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import webhookDeliveryService from "./webhookDeliveryService";
 import { WebhookRetryService } from "./webhookRetry";
-import type { AttemptResult } from "./webhookRetry";
+import type { AttemptResult, RetryOutcome } from "./webhookRetry";
 import {
   NotificationChannelType,
   NotificationPayload,
@@ -34,6 +34,7 @@ import {
   NotificationTarget,
 } from "../types/notification";
 import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
+import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -387,16 +388,79 @@ type NotificationHandler = (
 ) => Promise<NotificationResult>;
 
 // ---------------------------------------------------------------------------
+// Circuit breaker integration
+//
+// WebhookRetryService already retries each delivery with exponential
+// backoff (skipping non-retryable statuses); the circuit breaker sits one
+// level up and reacts to a *delivery* failing after retries are exhausted,
+// rather than to each individual HTTP attempt. When the breaker is open,
+// the provider is not called at all — the operation fails fast.
+// ---------------------------------------------------------------------------
+
+/** Carries a fully-exhausted retry outcome through a thrown error so the
+ * circuit breaker observes the failure without losing the original outcome. */
+class DeliveryAttemptsExhaustedError extends Error {
+  constructor(readonly outcome: RetryOutcome) {
+    super(outcome.lastError ?? "Delivery failed after all retry attempts");
+  }
+}
+
+async function runWithBreakerAndRetry(
+  breaker: CircuitBreaker,
+  retryService: WebhookRetryService,
+  attemptFn: (attempt: number) => Promise<AttemptResult>
+): Promise<RetryOutcome> {
+  try {
+    return await breaker.execute(async () => {
+      const outcome = await retryService.execute(attemptFn);
+      if (!outcome.success) {
+        throw new DeliveryAttemptsExhaustedError(outcome);
+      }
+      return outcome;
+    });
+  } catch (error) {
+    if (error instanceof DeliveryAttemptsExhaustedError) {
+      return error.outcome;
+    }
+    if (error instanceof CircuitBreakerOpenError) {
+      return {
+        success: false,
+        attempts: 0,
+        totalDurationMs: 0,
+        lastStatusCode: null,
+        lastError: error.message,
+      };
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // NotificationService
 // ---------------------------------------------------------------------------
 
 export class NotificationService {
   private readonly handlers = new Map<NotificationChannelType, NotificationHandler>();
+  private readonly sendGridBreaker: CircuitBreaker;
+  private readonly twilioBreaker: CircuitBreaker;
 
   constructor() {
     this.registerChannel("WEBHOOK", this.sendWebhookNotification.bind(this));
     this.registerChannel("EMAIL", this.sendEmailNotification.bind(this));
     this.registerChannel("SMS", this.sendSmsNotification.bind(this));
+
+    this.sendGridBreaker = new CircuitBreaker({
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeoutMs: 30000,
+    });
+    this.twilioBreaker = new CircuitBreaker({
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeoutMs: 30000,
+    });
+    registerCircuitBreaker("sendgrid", this.sendGridBreaker);
+    registerCircuitBreaker("twilio", this.twilioBreaker);
   }
 
   /**
@@ -554,7 +618,7 @@ export class NotificationService {
     );
 
     const useSendGrid = Boolean(process.env.SENDGRID_API_KEY);
-    const outcome = await retryService.execute(async () => {
+    const outcome = await runWithBreakerAndRetry(this.sendGridBreaker, retryService, async () => {
       if (useSendGrid) {
         return sendViaSendGrid(target.destination!, subject, payload.message, htmlBody);
       }
@@ -633,7 +697,7 @@ export class NotificationService {
       Boolean(process.env.TWILIO_ACCOUNT_SID) &&
       Boolean(process.env.TWILIO_AUTH_TOKEN);
 
-    const outcome = await retryService.execute(async () => {
+    const outcome = await runWithBreakerAndRetry(this.twilioBreaker, retryService, async () => {
       if (useTwilio) {
         return sendViaTwilio(target.destination!, payload.message);
       }

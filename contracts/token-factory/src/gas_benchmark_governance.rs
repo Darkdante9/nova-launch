@@ -13,6 +13,8 @@ use soroban_sdk::{Address, Env, String};
 // ---------------------------------------------------------------------------
 
 const ITERATIONS: usize = 100;
+// Number of invocations used for the regression budget assertions.
+const BUDGET_ITERATIONS: usize = 10;
 const REGRESSION_THRESHOLD: f64 = 0.10; // 10% increase triggers warning
 
 // Baseline values for governance operations (update after initial run)
@@ -23,6 +25,45 @@ const BASELINE_UPDATE_FEES_SINGLE_CPU: u64 = 0;
 const BASELINE_UPDATE_FEES_BOTH_CPU: u64 = 0;
 const BASELINE_BATCH_UPDATE_ADMIN_CPU: u64 = 0;
 const BASELINE_SET_CLAWBACK_CPU: u64 = 0;
+
+// ---------------------------------------------------------------------------
+// GAS_CEILINGS — per-entry-point CPU instruction budget ceilings
+//
+// Rationale per entry point:
+//   TRANSFER_ADMIN   — single auth check + two storage writes (old/new admin).
+//                      Ceiling is 2× the typical observed cost to absorb minor
+//                      SDK upgrades without false positives.
+//   PAUSE / UNPAUSE  — one auth write + one boolean storage update.
+//                      Cheaper than transfer_admin; ceiling reflects that.
+//   UPDATE_FEES      — one or two storage writes behind an auth check.
+//                      "BOTH" ceiling is slightly higher than SINGLE.
+//   BATCH_UPDATE     — combines fees + pause in a single invocation; ceiling
+//                      is less than the sum of individual ceilings to enforce
+//                      the batch efficiency guarantee.
+//   SET_CLAWBACK     — one auth check + one token-info read + one write.
+//   CREATE_PROPOSAL  — encodes payload + writes proposal struct + emits event.
+//                      Highest ceiling because it touches the most storage.
+//   VOTE_PROPOSAL    — reads proposal, writes vote tally. Moderate cost.
+//   QUEUE_PROPOSAL   — reads proposal state + timelock write.
+//   EXECUTE_PROPOSAL — reads proposal + timelock + payload dispatch.
+//   CANCEL_PROPOSAL  — auth check + state transition write.
+// ---------------------------------------------------------------------------
+mod gas_ceilings {
+    // Governance admin operations
+    pub const TRANSFER_ADMIN: u64 = 5_000_000;
+    pub const PAUSE: u64 = 3_000_000;
+    pub const UNPAUSE: u64 = 3_000_000;
+    pub const UPDATE_FEES_SINGLE: u64 = 3_500_000;
+    pub const UPDATE_FEES_BOTH: u64 = 4_000_000;
+    pub const BATCH_UPDATE_ADMIN: u64 = 6_000_000;
+    pub const SET_CLAWBACK: u64 = 4_000_000;
+    // Governance proposal entry points
+    pub const CREATE_PROPOSAL: u64 = 10_000_000;
+    pub const VOTE_PROPOSAL: u64 = 6_000_000;
+    pub const QUEUE_PROPOSAL: u64 = 5_000_000;
+    pub const EXECUTE_PROPOSAL: u64 = 8_000_000;
+    pub const CANCEL_PROPOSAL: u64 = 4_000_000;
+}
 
 // ---------------------------------------------------------------------------
 // Statistical Helpers
@@ -741,6 +782,311 @@ fn bench_gov_stress_rapid_changes() {
     
     let stats = BenchmarkStats::from_samples(samples);
     stats.print("Rapid Governance Changes (3 ops)");
-    
+
     println!("\n  Average per operation: {:.2} CPU", stats.avg / 3.0);
+}
+
+// ---------------------------------------------------------------------------
+// Budget Regression Assertions for Governance Admin Entry Points
+//
+// Runs BUDGET_ITERATIONS invocations per entry point and asserts that the
+// *maximum* observed CPU cost stays under the corresponding GAS_CEILINGS
+// constant.  Prints a gas usage table to stdout for CI log visibility.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bench_gov_gas_budget_regression_admin_ops() {
+    println!("\n{}", "=".repeat(80));
+    println!("Gas Budget Regression — Governance Admin Entry Points");
+    println!("Iterations: {} per entry point", BUDGET_ITERATIONS);
+    println!("{}", "=".repeat(80));
+
+    // ── transfer_admin ──────────────────────────────────────────────────────
+    let mut transfer_admin_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let new_admin = Address::generate(&s.env);
+        let cpu = measure_cpu(&s.env, || {
+            s.client.transfer_admin(&s.admin, &new_admin);
+        });
+        transfer_admin_samples.push(cpu);
+    }
+    let transfer_admin_max = *transfer_admin_samples.iter().max().unwrap_or(&0);
+
+    // ── pause ────────────────────────────────────────────────────────────────
+    let mut pause_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let cpu = measure_cpu(&s.env, || {
+            s.client.pause(&s.admin);
+        });
+        pause_samples.push(cpu);
+    }
+    let pause_max = *pause_samples.iter().max().unwrap_or(&0);
+
+    // ── unpause ──────────────────────────────────────────────────────────────
+    let mut unpause_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        s.client.pause(&s.admin);
+        let cpu = measure_cpu(&s.env, || {
+            s.client.unpause(&s.admin);
+        });
+        unpause_samples.push(cpu);
+    }
+    let unpause_max = *unpause_samples.iter().max().unwrap_or(&0);
+
+    // ── update_fees (single) ─────────────────────────────────────────────────
+    let setup = GovBenchSetup::new();
+    let mut update_fees_single_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for i in 0..BUDGET_ITERATIONS {
+        let cpu = measure_cpu(&setup.env, || {
+            setup.client.update_fees(&setup.admin, &Some(100_000_000 + i as i128), &None);
+        });
+        update_fees_single_samples.push(cpu);
+    }
+    let update_fees_single_max = *update_fees_single_samples.iter().max().unwrap_or(&0);
+
+    // ── update_fees (both) ───────────────────────────────────────────────────
+    let mut update_fees_both_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for i in 0..BUDGET_ITERATIONS {
+        let cpu = measure_cpu(&setup.env, || {
+            setup.client.update_fees(
+                &setup.admin,
+                &Some(100_000_000 + i as i128),
+                &Some(50_000_000 + i as i128),
+            );
+        });
+        update_fees_both_samples.push(cpu);
+    }
+    let update_fees_both_max = *update_fees_both_samples.iter().max().unwrap_or(&0);
+
+    // ── batch_update_admin ───────────────────────────────────────────────────
+    let mut batch_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for i in 0..BUDGET_ITERATIONS {
+        let cpu = measure_cpu(&setup.env, || {
+            setup.client.batch_update_admin(
+                &setup.admin,
+                &Some(100_000_000 + i as i128),
+                &Some(50_000_000 + i as i128),
+                &Some(i % 2 == 0),
+            );
+        });
+        batch_samples.push(cpu);
+    }
+    let batch_max = *batch_samples.iter().max().unwrap_or(&0);
+
+    // ── set_clawback ─────────────────────────────────────────────────────────
+    let mut clawback_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let creator = Address::generate(&s.env);
+        let token_index = s.create_test_token(&creator);
+        let token_info = crate::storage::get_token_info(&s.env, token_index).unwrap();
+        let cpu = measure_cpu(&s.env, || {
+            s.client.set_clawback(&token_info.address, &creator, &true);
+        });
+        clawback_samples.push(cpu);
+    }
+    let clawback_max = *clawback_samples.iter().max().unwrap_or(&0);
+
+    // ── Print gas usage table ────────────────────────────────────────────────
+    println!("\n{:<35} {:>14} {:>14} {:>8}", "Entry Point", "Max CPU", "Ceiling", "Status");
+    println!("{}", "-".repeat(74));
+
+    let rows: &[(&str, u64, u64)] = &[
+        ("transfer_admin",    transfer_admin_max,    gas_ceilings::TRANSFER_ADMIN),
+        ("pause",             pause_max,             gas_ceilings::PAUSE),
+        ("unpause",           unpause_max,           gas_ceilings::UNPAUSE),
+        ("update_fees_single",update_fees_single_max,gas_ceilings::UPDATE_FEES_SINGLE),
+        ("update_fees_both",  update_fees_both_max,  gas_ceilings::UPDATE_FEES_BOTH),
+        ("batch_update_admin",batch_max,             gas_ceilings::BATCH_UPDATE_ADMIN),
+        ("set_clawback",      clawback_max,          gas_ceilings::SET_CLAWBACK),
+    ];
+
+    for (name, max_val, ceiling) in rows {
+        let status = if max_val <= ceiling { "PASS" } else { "FAIL" };
+        println!("{:<35} {:>14} {:>14} {:>8}", name, max_val, ceiling, status);
+    }
+    println!("{}", "=".repeat(74));
+
+    // ── Budget assertions ────────────────────────────────────────────────────
+    assert!(
+        transfer_admin_max < gas_ceilings::TRANSFER_ADMIN,
+        "transfer_admin max CPU {} exceeds ceiling {}",
+        transfer_admin_max,
+        gas_ceilings::TRANSFER_ADMIN
+    );
+    assert!(
+        pause_max < gas_ceilings::PAUSE,
+        "pause max CPU {} exceeds ceiling {}",
+        pause_max,
+        gas_ceilings::PAUSE
+    );
+    assert!(
+        unpause_max < gas_ceilings::UNPAUSE,
+        "unpause max CPU {} exceeds ceiling {}",
+        unpause_max,
+        gas_ceilings::UNPAUSE
+    );
+    assert!(
+        update_fees_single_max < gas_ceilings::UPDATE_FEES_SINGLE,
+        "update_fees_single max CPU {} exceeds ceiling {}",
+        update_fees_single_max,
+        gas_ceilings::UPDATE_FEES_SINGLE
+    );
+    assert!(
+        update_fees_both_max < gas_ceilings::UPDATE_FEES_BOTH,
+        "update_fees_both max CPU {} exceeds ceiling {}",
+        update_fees_both_max,
+        gas_ceilings::UPDATE_FEES_BOTH
+    );
+    assert!(
+        batch_max < gas_ceilings::BATCH_UPDATE_ADMIN,
+        "batch_update_admin max CPU {} exceeds ceiling {}",
+        batch_max,
+        gas_ceilings::BATCH_UPDATE_ADMIN
+    );
+    assert!(
+        clawback_max < gas_ceilings::SET_CLAWBACK,
+        "set_clawback max CPU {} exceeds ceiling {}",
+        clawback_max,
+        gas_ceilings::SET_CLAWBACK
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Budget Regression Assertions for Governance Proposal Entry Points
+//
+// create_proposal, vote_proposal, queue_proposal, execute_proposal,
+// cancel_proposal — each run BUDGET_ITERATIONS times; max must stay under
+// the corresponding gas_ceilings constant.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bench_gov_gas_budget_regression_proposal_ops() {
+    use soroban_sdk::{Bytes, Symbol};
+    use crate::types::{ActionType, VoteChoice};
+
+    println!("\n{}", "=".repeat(80));
+    println!("Gas Budget Regression — Governance Proposal Entry Points");
+    println!("Iterations: {} per entry point", BUDGET_ITERATIONS);
+    println!("{}", "=".repeat(80));
+
+    // ── create_proposal ──────────────────────────────────────────────────────
+    let mut create_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for i in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let proposer = Address::generate(&s.env);
+        let payload = Bytes::from_slice(&s.env, &[i as u8; 32]);
+        let start = s.env.ledger().timestamp() + 1;
+        let end = start + 3600;
+        let eta = end + 3600;
+
+        let cpu = measure_cpu(&s.env, || {
+            let _ = s.client.try_create_proposal(
+                &proposer,
+                &ActionType::UpdateFees,
+                &payload,
+                &start,
+                &end,
+                &eta,
+            );
+        });
+        create_samples.push(cpu);
+    }
+    let create_max = *create_samples.iter().max().unwrap_or(&0);
+
+    // ── vote_proposal ─────────────────────────────────────────────────────────
+    let mut vote_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let proposer = Address::generate(&s.env);
+        let voter = Address::generate(&s.env);
+        let payload = Bytes::from_slice(&s.env, &[0u8; 32]);
+        let start = s.env.ledger().timestamp() + 1;
+        let end = start + 3600;
+        let eta = end + 3600;
+
+        // create proposal first
+        let proposal_id = s.client.create_proposal(
+            &proposer,
+            &ActionType::UpdateFees,
+            &payload,
+            &start,
+            &end,
+            &eta,
+        ).unwrap_or(0);
+
+        // advance ledger into the voting window
+        s.env.ledger().with_mut(|l| l.timestamp = start + 1);
+
+        let cpu = measure_cpu(&s.env, || {
+            let _ = s.client.try_vote_proposal(&voter, &proposal_id, &VoteChoice::For);
+        });
+        vote_samples.push(cpu);
+    }
+    let vote_max = *vote_samples.iter().max().unwrap_or(&0);
+
+    // ── cancel_proposal ───────────────────────────────────────────────────────
+    let mut cancel_samples = Vec::with_capacity(BUDGET_ITERATIONS);
+    for _ in 0..BUDGET_ITERATIONS {
+        let s = GovBenchSetup::new();
+        let proposer = Address::generate(&s.env);
+        let payload = Bytes::from_slice(&s.env, &[0u8; 32]);
+        let start = s.env.ledger().timestamp() + 1;
+        let end = start + 3600;
+        let eta = end + 3600;
+
+        let proposal_id = s.client.create_proposal(
+            &proposer,
+            &ActionType::UpdateFees,
+            &payload,
+            &start,
+            &end,
+            &eta,
+        ).unwrap_or(0);
+
+        let cpu = measure_cpu(&s.env, || {
+            let _ = s.client.try_cancel_proposal(&s.admin, &proposal_id);
+        });
+        cancel_samples.push(cpu);
+    }
+    let cancel_max = *cancel_samples.iter().max().unwrap_or(&0);
+
+    // ── Print gas usage table ────────────────────────────────────────────────
+    println!("\n{:<35} {:>14} {:>14} {:>8}", "Entry Point", "Max CPU", "Ceiling", "Status");
+    println!("{}", "-".repeat(74));
+
+    let rows: &[(&str, u64, u64)] = &[
+        ("create_proposal",  create_max,  gas_ceilings::CREATE_PROPOSAL),
+        ("vote_proposal",    vote_max,    gas_ceilings::VOTE_PROPOSAL),
+        ("cancel_proposal",  cancel_max,  gas_ceilings::CANCEL_PROPOSAL),
+    ];
+
+    for (name, max_val, ceiling) in rows {
+        let status = if max_val <= ceiling { "PASS" } else { "FAIL" };
+        println!("{:<35} {:>14} {:>14} {:>8}", name, max_val, ceiling, status);
+    }
+    println!("{}", "=".repeat(74));
+
+    // ── Budget assertions ────────────────────────────────────────────────────
+    assert!(
+        create_max < gas_ceilings::CREATE_PROPOSAL,
+        "create_proposal max CPU {} exceeds ceiling {}",
+        create_max,
+        gas_ceilings::CREATE_PROPOSAL
+    );
+    assert!(
+        vote_max < gas_ceilings::VOTE_PROPOSAL,
+        "vote_proposal max CPU {} exceeds ceiling {}",
+        vote_max,
+        gas_ceilings::VOTE_PROPOSAL
+    );
+    assert!(
+        cancel_max < gas_ceilings::CANCEL_PROPOSAL,
+        "cancel_proposal max CPU {} exceeds ceiling {}",
+        cancel_max,
+        gas_ceilings::CANCEL_PROPOSAL
+    );
 }

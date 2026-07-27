@@ -3,6 +3,8 @@ import { fetchTokenStats, fetchBurnRecords } from '../services/tokenAnalyticsApi
 import { groupBurnsByDay, normaliseSupplyHistory } from '../utils/analyticsTransforms';
 import type { TokenStats, BurnRecord } from '../services/tokenAnalyticsApi';
 import type { DailyBurnPoint, SupplyPoint } from '../utils/analyticsTransforms';
+import type { Granularity } from '../components/TokenAnalytics/GranularityToggle';
+import type { TimeRange } from '../components/TokenAnalytics/TimeRangeSelector';
 
 export interface TokenAnalyticsData {
   stats: TokenStats | null;
@@ -18,7 +20,11 @@ export interface TokenAnalyticsData {
  * Fetch token stats (REST) and burn records (GraphQL) in parallel and return
  * a unified, chart-ready data shape.
  */
-export function useTokenAnalytics(address: string): TokenAnalyticsData {
+export function useTokenAnalytics(
+  address: string,
+  timeRange?: TimeRange,
+  granularity?: Granularity
+): TokenAnalyticsData {
   const [stats, setStats] = useState<TokenStats | null>(null);
   const [burnRecords, setBurnRecords] = useState<BurnRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,24 +38,39 @@ export function useTokenAnalytics(address: string): TokenAnalyticsData {
     setLoading(true);
     setError(null);
 
-    Promise.all([fetchTokenStats(address), fetchBurnRecords(address)])
-      .then(([s, records]) => {
+    const fetchRecords = async () => {
+      try {
+        const options: { startDate?: string; endDate?: string; granularity?: Granularity } = {};
+        if (timeRange?.preset === 'custom') {
+          options.startDate = timeRange.startDate;
+          options.endDate = timeRange.endDate;
+        }
+        if (granularity) {
+          options.granularity = granularity;
+        }
+
+        const [s, records] = await Promise.all([
+          fetchTokenStats(address),
+          fetchBurnRecords(address, options),
+        ]);
+
         if (cancelled) return;
         setStats(s);
         setBurnRecords(records);
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Failed to load analytics');
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    };
+
+    fetchRecords();
 
     return () => {
       cancelled = true;
     };
-  }, [address, tick]);
+  }, [address, timeRange, granularity, tick]);
 
   const decimals = stats?.decimals ?? 7;
   const dailyBurns = groupBurnsByDay(burnRecords, decimals);

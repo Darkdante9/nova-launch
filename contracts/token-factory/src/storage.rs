@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env};
 
-use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, TokenInfo};
+use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, StreamCursor, TokenInfo};
 
 // ============================================================
 // TTL Bump Constants (#1128)
@@ -112,6 +112,38 @@ pub fn get_governance(env: &Env) -> Option<Address> {
 
 pub fn set_governance(env: &Env, governance: &Address) {
     env.storage().instance().set(&DataKey::Governance, governance);
+}
+
+// Metadata immutability lock (#1359)
+//
+// Token identity fields (name, symbol, decimals) are immutable for the lifetime
+// of the contract once the lock is engaged. The lock is engaged at the end of
+// the first successful `initialize` call so that buyers can rely on the identity
+// of every token deployed by this factory never changing out from under them.
+
+/// Returns `true` if the metadata identity lock has been engaged.
+pub fn is_metadata_locked(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::MetadataLocked)
+        .unwrap_or(false)
+}
+
+/// Engage the metadata identity lock and record the ledger at which it occurred.
+/// Idempotent: the recorded ledger is only written the first time the lock is set.
+pub fn set_metadata_locked(env: &Env, locked: bool) {
+    env.storage().instance().set(&DataKey::MetadataLocked, &locked);
+    if locked && !env.storage().instance().has(&DataKey::MetadataLockedAt) {
+        let ledger = env.ledger().sequence();
+        env.storage()
+            .instance()
+            .set(&DataKey::MetadataLockedAt, &ledger);
+    }
+}
+
+/// Returns the ledger sequence at which the metadata lock was engaged, if ever.
+pub fn get_metadata_locked_at(env: &Env) -> Option<u32> {
+    env.storage().instance().get(&DataKey::MetadataLockedAt)
 }
 
 // Fee management
@@ -792,6 +824,32 @@ pub fn set_timelock_config(env: &Env, config: &crate::types::TimelockConfig) {
         .set(&DataKey::TimelockConfig, config);
 }
 
+// ── Per-type timelock delay storage ───────────────────────
+
+/// Default per-type delays (in ledgers).
+const DEFAULT_FEE_CHANGE_DELAY: u64 = 100;
+const DEFAULT_ADMIN_TRANSFER_DELAY: u64 = 1_000;
+const DEFAULT_UPGRADE_DELAY: u64 = 5_000;
+const DEFAULT_PAUSE_DELAY: u64 = 100;
+
+pub fn get_timelock_delay_config(env: &Env) -> crate::types::TimelockDelayConfig {
+    env.storage()
+        .instance()
+        .get(&DataKey::TimelockDelayConfig)
+        .unwrap_or(crate::types::TimelockDelayConfig {
+            fee_change_delay: DEFAULT_FEE_CHANGE_DELAY,
+            admin_transfer_delay: DEFAULT_ADMIN_TRANSFER_DELAY,
+            upgrade_delay: DEFAULT_UPGRADE_DELAY,
+            default_delay: DEFAULT_PAUSE_DELAY,
+        })
+}
+
+pub fn set_timelock_delay_config(env: &Env, config: &crate::types::TimelockDelayConfig) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TimelockDelayConfig, config);
+}
+
 pub fn get_next_change_id(env: &Env) -> Result<u64, Error> {
     let id = env
         .storage()
@@ -1044,6 +1102,38 @@ pub fn get_next_stream_id(env: &Env) -> u64 {
     id
 }
 
+// ── Keyset pagination index (per-owner streams) ─────────────────
+
+/// Append a `(created_ledger, stream_id)` entry to the owner's keyset index.
+///
+/// Streams are appended in creation order, and since `created_ledger` is
+/// non-decreasing over time and `stream_id` is monotonically increasing,
+/// the resulting vector is always sorted ascending by `(created_ledger,
+/// stream_id)` without needing an explicit sort on read.
+pub fn add_creator_stream_index(env: &Env, owner: &Address, created_ledger: u32, stream_id: u64) {
+    let key = DataKey::CreatorStreamIndex(owner.clone());
+    let mut index: soroban_sdk::Vec<StreamCursor> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(soroban_sdk::Vec::new(env));
+
+    index.push_back(StreamCursor {
+        created_ledger,
+        stream_id,
+    });
+
+    env.storage().persistent().set(&key, &index);
+}
+
+/// Get the full keyset index (ascending `(created_ledger, stream_id)`) for an owner.
+pub fn get_creator_stream_index(env: &Env, owner: &Address) -> soroban_sdk::Vec<StreamCursor> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CreatorStreamIndex(owner.clone()))
+        .unwrap_or(soroban_sdk::Vec::new(env))
+}
+
 // ── Vault storage functions ───────────────────────────────
 
 /// Get the total number of vaults created.
@@ -1115,6 +1205,58 @@ pub fn get_creator_vault_count(env: &Env, creator: &Address) -> u32 {
         .persistent()
         .get(&DataKey::CreatorVaultCount(creator.clone()))
         .unwrap_or(0)
+}
+
+// ── Vault circuit breaker storage ─────────────────────────────────────────
+
+/// Default epoch length in ledgers (~1 day at 5s/ledger)
+pub const DEFAULT_EPOCH_LEDGERS: u32 = 17_280;
+
+/// Current epoch number derived from ledger sequence.
+pub fn current_epoch(env: &Env) -> u32 {
+    env.ledger().sequence() / DEFAULT_EPOCH_LEDGERS
+}
+
+/// Cumulative withdrawal volume for the given epoch.
+pub fn get_epoch_withdraw_volume(env: &Env, epoch: u32) -> i128 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::EpochWithdrawVolume(epoch))
+        .unwrap_or(0_i128)
+}
+
+pub fn set_epoch_withdraw_volume(env: &Env, epoch: u32, volume: i128) {
+    env.storage()
+        .temporary()
+        .set(&DataKey::EpochWithdrawVolume(epoch), &volume);
+}
+
+/// Per-epoch withdrawal limit (0 = unlimited / not set).
+pub fn get_vault_withdraw_limit(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::VaultWithdrawLimit)
+        .unwrap_or(0_i128)
+}
+
+pub fn set_vault_withdraw_limit(env: &Env, limit: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VaultWithdrawLimit, &limit);
+}
+
+/// Whether vault withdrawals are paused by the circuit breaker.
+pub fn get_vault_circuit_breaker_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::VaultCircuitBreakerPaused)
+        .unwrap_or(false)
+}
+
+pub fn set_vault_circuit_breaker_paused(env: &Env, paused: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VaultCircuitBreakerPaused, &paused);
 }
 
 /// Get a page of vaults in ascending vault_id order
@@ -1291,6 +1433,24 @@ pub fn get_vote(env: &Env, proposal_id: u64, voter: &Address) -> Option<crate::t
         .get(&DataKey::ProposalVote(proposal_id, voter.clone()))
 }
 
+/// Get the ledger sequence at which a `ProposalStateSnapshot` event was last
+/// emitted for `proposal_id`. Returns 0 if no snapshot has ever been taken.
+pub fn get_proposal_last_snapshot_ledger(env: &Env, proposal_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProposalLastSnapshotLedger(proposal_id))
+        .unwrap_or(0)
+}
+
+/// Record the ledger sequence at which a `ProposalStateSnapshot` event was
+/// emitted for `proposal_id`, so future triggers know when the next snapshot
+/// is due.
+pub fn set_proposal_last_snapshot_ledger(env: &Env, proposal_id: u64, ledger: u32) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProposalLastSnapshotLedger(proposal_id), &ledger);
+}
+
 // ============================================================
 // Storage Functions - Address Freezing (Transfer Restrictions)
 // ============================================================
@@ -1406,6 +1566,50 @@ pub fn get_valid_proof(env: &Env, milestone_hash: &soroban_sdk::BytesN<32>) -> O
     env.storage()
         .temporary()
         .get(&key)
+}
+
+/// Register an authorized oracle for milestone verification
+pub fn set_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .set(&key, &true);
+}
+
+/// Check if an oracle is authorized for milestone verification
+pub fn get_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) -> Option<bool> {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .get(&key)
+}
+
+/// Remove an oracle from the authorized list
+pub fn remove_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .remove(&key);
+}
+
+/// Mark that the contract-wide milestone verifier has been configured
+pub fn set_verifier_configured(env: &Env, configured: bool) {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, "verifier_configured"), &configured);
+}
+
+/// Check if the contract-wide milestone verifier has been configured
+pub fn is_verifier_configured(env: &Env) -> bool {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .get::<_, bool>(&Symbol::new(env, "verifier_configured"))
+        .unwrap_or(false)
 }
 
 // ============================================================
@@ -1775,29 +1979,6 @@ pub fn is_trusted_caller(env: &Env, caller: &Address) -> bool {
 }
 
 // ============================================================
-// Cross-Contract Trusted Caller Storage
-// ============================================================
-
-pub fn set_trusted_caller(env: &Env, caller: &Address) {
-    env.storage()
-        .instance()
-        .set(&crate::types::DataKey::TrustedCaller(caller.clone()), &true);
-}
-
-pub fn remove_trusted_caller(env: &Env, caller: &Address) {
-    env.storage()
-        .instance()
-        .remove(&crate::types::DataKey::TrustedCaller(caller.clone()));
-}
-
-pub fn is_trusted_caller(env: &Env, caller: &Address) -> bool {
-    env.storage()
-        .instance()
-        .get::<_, bool>(&crate::types::DataKey::TrustedCaller(caller.clone()))
-        .unwrap_or(false)
-}
-
-// ============================================================
 // Metadata Content Hash Storage (#1131)
 // ============================================================
 
@@ -1858,4 +2039,73 @@ pub fn remove_pending_vault_owner_change(env: &Env, vault_id: u64) {
     env.storage()
         .persistent()
         .remove(&crate::types::DataKey::PendingVaultOwnerChange(vault_id));
+}
+
+// ============================================================
+// Recurring Stream Storage
+// ============================================================
+
+/// Get recurring stream by ID
+pub fn get_recurring_stream(env: &Env, stream_id: u64) -> Option<crate::types::RecurringStream> {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::RecurringStream(stream_id))
+}
+
+/// Set recurring stream
+pub fn set_recurring_stream(env: &Env, stream_id: u64, stream: &crate::types::RecurringStream) {
+    env.storage()
+        .persistent()
+        .set(&crate::types::DataKey::RecurringStream(stream_id), stream);
+}
+
+/// Get total recurring stream count
+pub fn get_recurring_stream_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&crate::types::DataKey::RecurringStreamCount)
+        .unwrap_or(0)
+}
+
+/// Get next recurring stream ID and increment counter
+pub fn next_recurring_stream_id(env: &Env) -> u64 {
+    let id = env
+        .storage()
+        .instance()
+        .get(&crate::types::DataKey::NextRecurringStreamId)
+        .unwrap_or(0_u64);
+    env.storage()
+        .instance()
+        .set(&crate::types::DataKey::NextRecurringStreamId, &(id + 1));
+    id
+}
+
+/// Get number of recurring streams created by a creator
+pub fn get_creator_recurring_stream_count(env: &Env, creator: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()))
+        .unwrap_or(0)
+}
+
+/// Get recurring stream ID by creator and index
+pub fn get_creator_recurring_stream(env: &Env, creator: &Address, index: u32) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::RecurringStreamByCreator(creator.clone(), index))
+}
+
+/// Record a new recurring stream for a creator
+pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
+    let count = get_creator_recurring_stream_count(env, creator);
+    env.storage().persistent().set(
+        &crate::types::DataKey::RecurringStreamByCreator(creator.clone(), count),
+        &stream_id,
+    );
+    let new_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage().persistent().set(
+        &crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()),
+        &new_count,
+    );
+    Ok(())
 }

@@ -13,6 +13,7 @@ import {
   batchDeployTokens,
   type TokenDeployInput,
 } from "../services/batchTokenDeployService";
+import { CursorPagination } from "../lib/pagination";
 
 const router = Router();
 
@@ -30,6 +31,9 @@ const searchParamsSchema = z.object({
   hasBurns: z.enum(["true", "false"]).optional(),
   sortBy: z.enum(["created", "burned", "supply", "name"]).default("created"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  // Keyset cursor (preferred) — see CursorPagination.decodeCreatedAtCursor.
+  cursor: z.string().optional(),
+  // Offset-based page number — deprecated, kept for backward compatibility.
   page: z.string().regex(/^\d+$/).default("1"),
   limit: z.string().regex(/^\d+$/).default("20"),
 });
@@ -97,81 +101,120 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       });
     }
 
+    // Cursor pagination is only well-defined against the `createdAt`+`id`
+    // keyset this endpoint sorts other fields independently of — reject the
+    // combination explicitly rather than silently falling back to offset.
+    if (params.cursor && params.sortBy !== "created") {
+      return res.status(400).json({
+        success: false,
+        error: "cursor pagination is only supported with sortBy=created",
+      });
+    }
+
     // Parse pagination
     const page = parseInt(params.page);
     const limit = Math.min(parseInt(params.limit), 50); // Max 50 per page
     const skip = (page - 1) * limit;
 
-    // Build where clause — always scoped to the requesting tenant.
+    // Base filters — always scoped to the requesting tenant.
     // The explicit `creator` query param is intentionally ignored: tenants may
     // only query their own tokens, so the scope is always `creator = tenantId`.
-    const where: Prisma.TokenWhereInput = {
-      creator: tenantId,
-    };
+    const baseConditions: Prisma.TokenWhereInput[] = [{ creator: tenantId }];
 
     // Full-text search by name or symbol
     if (params.q) {
-      where.OR = [
-        { name: { contains: params.q, mode: "insensitive" } },
-        { symbol: { contains: params.q, mode: "insensitive" } },
-      ];
+      baseConditions.push({
+        OR: [
+          { name: { contains: params.q, mode: "insensitive" } },
+          { symbol: { contains: params.q, mode: "insensitive" } },
+        ],
+      });
     }
 
     // Filter by creation date range
     if (params.startDate || params.endDate) {
-      where.createdAt = {};
-      if (params.startDate) {
-        where.createdAt.gte = new Date(params.startDate);
-      }
-      if (params.endDate) {
-        where.createdAt.lte = new Date(params.endDate);
-      }
+      const createdAt: Prisma.DateTimeFilter = {};
+      if (params.startDate) createdAt.gte = new Date(params.startDate);
+      if (params.endDate) createdAt.lte = new Date(params.endDate);
+      baseConditions.push({ createdAt });
     }
 
     // Filter by supply range
     if (params.minSupply || params.maxSupply) {
-      where.totalSupply = {};
-      if (params.minSupply) {
-        where.totalSupply.gte = BigInt(params.minSupply);
-      }
-      if (params.maxSupply) {
-        where.totalSupply.lte = BigInt(params.maxSupply);
-      }
+      const totalSupply: Prisma.BigIntFilter = {};
+      if (params.minSupply) totalSupply.gte = BigInt(params.minSupply);
+      if (params.maxSupply) totalSupply.lte = BigInt(params.maxSupply);
+      baseConditions.push({ totalSupply });
     }
 
     // Filter by burn status
     if (params.hasBurns === "true") {
-      where.burnCount = { gt: 0 };
+      baseConditions.push({ burnCount: { gt: 0 } });
     } else if (params.hasBurns === "false") {
-      where.burnCount = 0;
+      baseConditions.push({ burnCount: 0 });
     }
 
-    // Build orderBy clause
-    let orderBy: Prisma.TokenOrderByWithRelationInput = {};
+    // Keyset cursor condition — `(createdAt, id) > (cursor.createdAt, cursor.id)`
+    // (or `<` for descending order), comparing the full tuple so rows with an
+    // identical `createdAt` never collide or get skipped/duplicated across
+    // pages the way plain offset pagination can when rows are inserted
+    // between fetches.
+    const andConditions = [...baseConditions];
+    let decodedCursor: { createdAt: string; id: string } | undefined;
 
-    switch (params.sortBy) {
-      case "created":
-        orderBy = { createdAt: params.sortOrder };
-        break;
-      case "burned":
-        orderBy = { totalBurned: params.sortOrder };
-        break;
-      case "supply":
-        orderBy = { totalSupply: params.sortOrder };
-        break;
-      case "name":
-        orderBy = { name: params.sortOrder };
-        break;
+    if (params.cursor) {
+      try {
+        decodedCursor = CursorPagination.decodeCreatedAtCursor(params.cursor);
+      } catch {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid cursor parameter",
+        });
+      }
+
+      const cursorTime = new Date(decodedCursor.createdAt);
+      andConditions.push(
+        params.sortOrder === "asc"
+          ? {
+              OR: [
+                { createdAt: { gt: cursorTime } },
+                { createdAt: cursorTime, id: { gt: decodedCursor.id } },
+              ],
+            }
+          : {
+              OR: [
+                { createdAt: { lt: cursorTime } },
+                { createdAt: cursorTime, id: { gt: decodedCursor.id } },
+              ],
+            }
+      );
     }
 
-    // Execute queries in parallel
+    const where: Prisma.TokenWhereInput = { AND: andConditions };
+    // `total`/`totalPages` describe all matching rows regardless of cursor
+    // position, so the count query excludes the cursor condition.
+    const countWhere: Prisma.TokenWhereInput = { AND: baseConditions };
+
+    // Build orderBy clause. `created` always includes `id` as a tie-breaker
+    // so the keyset cursor above has a stable, total order to walk.
+    const orderBy: Prisma.TokenOrderByWithRelationInput[] =
+      params.sortBy === "created"
+        ? [{ createdAt: params.sortOrder }, { id: "asc" }]
+        : params.sortBy === "burned"
+        ? [{ totalBurned: params.sortOrder }]
+        : params.sortBy === "supply"
+        ? [{ totalSupply: params.sortOrder }]
+        : [{ name: params.sortOrder }];
+
+    // Fetch one extra row beyond `limit` so `hasMore`/`nextCursor` can be
+    // computed without a second count-from-cursor query.
     const start = performance.now();
-    const [tokens, total] = await Promise.all([
+    const [rawTokens, total] = await Promise.all([
       prisma.token.findMany({
         where,
         orderBy,
-        skip,
-        take: limit,
+        ...(params.cursor ? {} : { skip }),
+        take: limit + 1,
         select: {
           id: true,
           address: true,
@@ -188,13 +231,26 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
           updatedAt: true,
         },
       }),
-      prisma.token.count({ where }),
+      prisma.token.count({ where: countWhere }),
     ]);
     const duration = performance.now() - start;
     if (duration > 150) {
       console.warn(`[PERF] Token search took ${duration.toFixed(2)}ms`);
     }
 
+    const hasMore = rawTokens.length > limit;
+    const tokens = hasMore ? rawTokens.slice(0, limit) : rawTokens;
+    const lastToken = tokens[tokens.length - 1];
+
+    // Keyset cursor navigation is only offered for the `created` sort —
+    // other sort modes keep the deprecated page/offset flow exclusively.
+    const nextCursor =
+      params.sortBy === "created" && hasMore && lastToken
+        ? CursorPagination.encodeCursor({
+            createdAt: lastToken.createdAt.toISOString(),
+            id: String(lastToken.id),
+          })
+        : null;
 
     // Convert BigInt to string for JSON serialization
     const serializedTokens = tokens.map((token) => ({
@@ -216,6 +272,8 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
         totalPages,
         hasNext: page < totalPages,
         hasPrev: page > 1,
+        nextCursor,
+        hasMore,
       },
       filters: {
         q: params.q,
@@ -227,6 +285,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
         hasBurns: params.hasBurns,
         sortBy: params.sortBy,
         sortOrder: params.sortOrder,
+        cursor: params.cursor,
       },
     };
 

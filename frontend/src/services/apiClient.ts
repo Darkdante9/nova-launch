@@ -28,6 +28,8 @@
  */
 
 import { getTransactionId, TXN_ID_HEADER } from '../utils/transactionId';
+// Lazy import to avoid circular dependency (authSyncService → apiClient → authSyncService)
+import type { AuthSyncService } from './authSync.service';
 
 const CORRELATION_ID_HEADER = 'X-Correlation-Id' as const;
 
@@ -82,10 +84,19 @@ function getBaseUrl(): string {
 /** Generic JSON fetch with propagation headers. */
 async function apiFetch<T = unknown>(
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  _retry = true
 ): Promise<T> {
   const url = path.startsWith('http') ? path : `${getBaseUrl()}${path}`;
   const headers = buildRequestHeaders(init.headers);
+
+  // Inject stored access token when available
+  const storedToken = (() => {
+    try { return localStorage.getItem('nova_access_token'); } catch { return null; }
+  })();
+  if (storedToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${storedToken}`);
+  }
 
   // Ensure JSON content type for bodies
   if (init.body && !headers.has('Content-Type')) {
@@ -96,6 +107,17 @@ async function apiFetch<T = unknown>(
   }
 
   const response = await fetch(url, { ...init, headers });
+
+  // 401 interceptor — attempt silent re-auth then retry once (#1371)
+  if (response.status === 401 && _retry) {
+    const { authSyncService } = await import('./authSync.service');
+    const newToken = await authSyncService.handleUnauthorized();
+    if (newToken) {
+      return apiFetch<T>(path, init, false);
+    }
+    const text = await response.text().catch(() => '');
+    throw new ApiError(response.status, response.statusText, text);
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');

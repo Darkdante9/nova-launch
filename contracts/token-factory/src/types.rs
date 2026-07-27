@@ -107,6 +107,24 @@ pub struct MetadataRecord {
     pub updated_by: Address,
 }
 
+/// A single milestone that gates a portion of a token stream.
+///
+/// The `oracle_address` must call `verify_stream_milestone` to unlock the
+/// `unlock_amount`. Once verified, that amount becomes claimable by the
+/// stream recipient on top of any time-vested balance.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Milestone {
+    /// Human-readable description (max 256 chars).
+    pub description: String,
+    /// Address whose `require_auth` approval unlocks this milestone.
+    pub oracle_address: Address,
+    /// Token amount (smallest unit) unlocked when this milestone is verified.
+    pub unlock_amount: i128,
+    /// Whether this milestone has been verified by the oracle.
+    pub verified: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamInfo {
@@ -123,6 +141,9 @@ pub struct StreamInfo {
     pub cancelled: bool,
     pub paused: bool,
     pub disputed: bool,
+    /// Optional list of milestones that gate additional unlock amounts.
+    /// An empty Vec means this is a pure time-based stream (no milestones).
+    pub milestones: Vec<Milestone>,
 }
 
 #[contracttype]
@@ -146,6 +167,22 @@ pub struct TokenCreationParams {
     pub initial_supply: i128,
     pub max_supply: Option<i128>,
     pub metadata_uri: Option<String>,
+    /// Whether admin clawback is enabled for this token.
+    /// This flag is **immutable after creation** — it cannot be toggled later.
+    /// Set `true` only for regulated use-cases (e.g. stablecoins, tokenized securities).
+    pub clawback_enabled: bool,
+}
+
+/// Outcome of validating a single item during a batch pre-flight dry-run.
+///
+/// `index` matches the item's position in the batch input vector.
+/// `error_code` is `0` when the item is valid, otherwise the `Error` code
+/// (see `Error`'s associated constants) it would fail with if executed.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreflightItemResult {
+    pub index: u32,
+    pub error_code: u32,
 }
 
 /// Timelock configuration
@@ -156,7 +193,35 @@ pub struct TimelockConfig {
     pub enabled: bool,
 }
 
+/// Per-proposal-type timelock delays (in ledgers).
+///
+/// Each field holds the mandatory delay for that proposal type.
+/// Defaults: fee_change = 100, admin_transfer = 1000, upgrade = 5000.
+/// All other types fall back to `default_delay`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimelockDelayConfig {
+    /// Delay for FeeChange / PolicyUpdate proposals (ledgers)
+    pub fee_change_delay: u64,
+    /// Delay for TreasuryChange / admin-transfer proposals (ledgers)
+    pub admin_transfer_delay: u64,
+    /// Delay for ParameterChange (contract upgrade) proposals (ledgers)
+    pub upgrade_delay: u64,
+    /// Fallback delay for PauseContract / UnpauseContract (ledgers)
+    pub default_delay: u64,
+}
+
 /// Governance configuration
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Configuration for governance voting thresholds
+///
+/// Defines the quorum and approval requirements for all governance proposals.
+///
+/// # Fields
+/// * `quorum_percent` - Minimum participation percentage required (0-100)
+/// * `approval_percent` - Minimum approval percentage required (0-100)
+/// * `voting_period` - Duration in seconds that voting remains open after proposal creation
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GovernanceConfig {
@@ -443,6 +508,62 @@ pub struct PendingVaultOwnerChange {
     pub creator_approved: bool,
 }
 
+/// Parameters for creating a recurring payment stream
+///
+/// Defines a stream that creates child streams automatically at fixed intervals.
+/// Each period creates an independent, claimable child stream.
+///
+/// # Fields
+/// * `recipient` - Payment recipient for each period
+/// * `amount_per_period` - Amount streamed in each period
+/// * `period_ledgers` - Duration of each period in ledgers
+/// * `total_periods` - Number of periods to create (max 1000)
+/// * `auto_renew` - Whether to continue creating periods after total_periods
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecurringStreamParams {
+    pub recipient: Address,
+    pub amount_per_period: i128,
+    pub period_ledgers: u64,
+    pub total_periods: u32,
+    pub auto_renew: bool,
+}
+
+/// Recurring payment stream tracking state
+///
+/// Tracks a recurring payment schedule that creates child streams automatically.
+/// When a period ends, a new child stream is created for the next period.
+///
+/// # Fields
+/// * `id` - Unique recurring stream ID
+/// * `creator` - Address that created this recurring stream (must authorize cancellations)
+/// * `recipient` - Payment recipient for each period
+/// * `amount_per_period` - Amount per period stream
+/// * `period_ledgers` - Duration of each period in ledgers
+/// * `total_periods` - Total periods requested (0 = unlimited if auto_renew true)
+/// * `periods_created` - How many periods have been created so far
+/// * `current_period_start_ledger` - Ledger when current period began
+/// * `auto_renew` - Whether to continue after total_periods (if total_periods > 0)
+/// * `auto_renew_enabled` - Current auto-renewal state (can be disabled by creator)
+/// * `cancelled` - Whether the recurring stream has been cancelled
+/// * `child_streams` - IDs of child streams created by this recurring stream
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecurringStream {
+    pub id: u64,
+    pub creator: Address,
+    pub recipient: Address,
+    pub amount_per_period: i128,
+    pub period_ledgers: u64,
+    pub total_periods: u32,
+    pub periods_created: u32,
+    pub current_period_start_ledger: u64,
+    pub auto_renew: bool,
+    pub auto_renew_enabled: bool,
+    pub cancelled: bool,
+    pub child_streams: Vec<u64>,
+}
+
 /// Staking Pool configuration and state
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -602,6 +723,7 @@ pub enum DataKey {
     TokenByAddress(Address),
     Paused,
     TimelockConfig,
+    TimelockDelayConfig,
     PendingChange(u64),
     NextChangeId,
     CreatorTokens(Address),
@@ -613,11 +735,15 @@ pub enum DataKey {
     ProposalCount,
     NextProposalId,
     ProposalVote(u64, Address),
+    /// Ledger sequence at which a per-proposal state snapshot was last emitted (#1383)
+    ProposalLastSnapshotLedger(u64),
     StreamCount,
     Stream(u32),
     TokenStreams(u32),
     TokenStreamCount(u32),
     NextStreamId,
+    // Keyset pagination index: ordered (created_ledger, stream_id) entries per owner
+    CreatorStreamIndex(Address),
     GovernanceConfig,
     Vault(u64),
     VaultCount,
@@ -625,6 +751,12 @@ pub enum DataKey {
     OwnerVaultCount(Address),
     VaultByCreator(Address, u32),
     CreatorVaultCount(Address),
+    /// Cumulative withdrawal volume for the current epoch (keyed by epoch number)
+    EpochWithdrawVolume(u32),
+    /// Admin-configured per-epoch withdrawal limit
+    VaultWithdrawLimit,
+    /// Whether vault withdrawals are paused by the circuit breaker
+    VaultCircuitBreakerPaused,
     PendingAdmin,
     BuybackCampaign(u64),
     BuybackCampaignCount,
@@ -689,6 +821,28 @@ pub enum DataKey {
     DistributionClaimed(u32, Address),
     /// Running total of amounts claimed for a distribution
     DistributionClaimedTotal(u32),
+    // Cross-contract trusted caller allowlist
+    TrustedCaller(Address),
+    // Role-based access control: (token_index, address, role_discriminant)
+    TokenRole(u32, Address, u32),
+    // Cross-contract multisig
+    MultiSigConfig,
+    MultiSigProposal(u64),
+    MultiSigProposalCount,
+    MultiSigApproval(u64, Address),
+    // Asset fractionalization
+    AssetToVault(BytesN<32>),
+    OwnerFractionalVaultCount(Address),
+    FractionalVault(u64),
+    FractionalVaultCount,
+    FractionalVaultByOwner(Address, u32),
+    // Per-token freeze allowlist: (token_address, address)
+    FrozenAddress(Address, Address),
+    // Scheduled burns
+    BurnSchedule(u64),
+    BurnScheduleCount,
+    // Metadata update history count: token_index
+    MetadataHistoryCount(u32),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -793,6 +947,18 @@ pub enum ProposalPriority {
 }
 
 /// Entry in the priority execution queue
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Entry in the proposal execution queue
+///
+/// Represents a proposal that is queued for execution after timelock expires.
+/// Entries are sorted by priority (descending) and enqueue time (ascending, FIFO).
+///
+/// # Fields
+/// * `proposal_id` - ID of the queued proposal
+/// * `priority` - Execution priority (higher values execute first)
+/// * `enqueued_at` - Ledger timestamp when entry was added to queue
+/// * `eta` - Earliest timestamp when proposal can be executed (timelock expiry)
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueEntry {
@@ -991,6 +1157,8 @@ impl Error {
     pub const DistributionAlreadyClaimed: Self = Self(103);
     pub const DistributionAlreadyReclaimed: Self = Self(104);
     pub const DistributionZeroSupply: Self = Self(105);
+    // Multisig errors
+    pub const DuplicateSigners: Self = Self(106);
 }
 
 impl From<Error> for soroban_sdk::Error {
@@ -1045,6 +1213,23 @@ pub enum VoteChoice {
     Abstain,
 }
 
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// State transitions for a governance proposal lifecycle
+///
+/// A proposal moves through these states: Created → Active → Succeeded/Defeated
+/// → Queued → Executed/Cancelled, with Expired/Failed as terminal states.
+///
+/// # Variants
+/// * `Created` - Proposal just created, voting not yet started
+/// * `Active` - Voting period is active
+/// * `Succeeded` - Voting ended with approval threshold met and quorum satisfied
+/// * `Defeated` - Voting ended without meeting approval or quorum requirements
+/// * `Queued` - Succeeded proposal queued for execution after timelock
+/// * `Executed` - Proposal executed successfully
+/// * `Cancelled` - Proposal cancelled before execution
+/// * `Expired` - Proposal never executed before expiration timestamp
+/// * `Failed` - Proposal execution failed (execution reverted)
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProposalState {
@@ -1111,12 +1296,22 @@ pub struct Proposal {
     pub start_time: u64,
     pub end_time: u64,
     pub eta: u64,
+    /// Timelock delay (in ledgers) captured at queue time for this proposal type.
+    /// Execution is blocked until `queued_at_ledger + timelock_delay` ledgers have passed.
+    pub timelock_delay: u64,
+    /// Ledger sequence number when the proposal was queued (set by `queue_proposal`).
+    /// Zero when the proposal has not yet been queued.
+    pub queued_at_ledger: u32,
     pub votes_for: i128,
     pub votes_against: i128,
     pub votes_abstain: i128,
     pub state: ProposalState,
     pub executed_at: Option<u64>,
     pub cancelled_at: Option<u64>,
+    /// Circulating supply (sum of all token `total_supply`) snapshotted at proposal
+    /// creation time. Used as the denominator for quorum calculations so that
+    /// supply changes after creation do not affect the quorum requirement.
+    pub circulating_supply_snapshot: i128,
 }
 
 /// Pagination cursor for token queries
@@ -1152,6 +1347,46 @@ pub struct PaginatedTokens {
     pub tokens: soroban_sdk::Vec<TokenInfo>,
     pub has_more: bool,
     pub cursor: PaginationCursor,
+}
+
+/// Keyset cursor for stream pagination.
+///
+/// Identifies a position in the `(created_ledger, stream_id)` ascending
+/// ordering of an owner's streams. Unlike offset-based pagination, this
+/// cursor is stable across concurrent inserts: a stream created after the
+/// cursor was issued can never be skipped or duplicated by a subsequent
+/// page fetch, because the scan always resumes strictly after the last
+/// `(created_ledger, stream_id)` pair returned.
+///
+/// # Fields
+/// * `created_ledger` - Ledger sequence number when the stream was created
+/// * `stream_id` - Unique stream identifier (tiebreaker for same-ledger creates)
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamCursor {
+    pub created_ledger: u32,
+    pub stream_id: u64,
+}
+
+impl StreamCursor {
+    /// True if `self` sorts strictly before `other` in `(created_ledger, stream_id)` order.
+    pub fn is_before(&self, other: &StreamCursor) -> bool {
+        (self.created_ledger, self.stream_id) < (other.created_ledger, other.stream_id)
+    }
+}
+
+/// Response for keyset-paginated stream listings.
+///
+/// # Fields
+/// * `streams` - Page of streams ordered by `(created_ledger, stream_id)` ascending
+/// * `next_cursor` - Cursor to pass to the next call (`None` when this is the last page)
+/// * `has_more` - Whether additional streams exist beyond this page
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaginatedStreamsResponse {
+    pub streams: soroban_sdk::Vec<StreamInfo>,
+    pub next_cursor: Option<StreamCursor>,
+    pub has_more: bool,
 }
 
 /// Paginated vault result
@@ -1647,6 +1882,32 @@ pub struct FractionalizationParams {
     pub total_supply: i128,
     pub token_name: String,
     pub token_symbol: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fee Update Governance Types (#1385)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A governance proposal for updating the factory fee structure.
+///
+/// Must pass quorum and wait for the timelock ETA before execution.
+/// Separate from the general proposal system for simplicity.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeUpdateProposal {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub new_base_fee: Option<i128>,
+    pub new_metadata_fee: Option<i128>,
+    pub proposed_at: u64,
+    /// Earliest ledger timestamp at which the proposal may be executed
+    pub eta: u64,
+    pub executed: bool,
+    pub cancelled: bool,
+    pub yes_votes: i128,
+    pub no_votes: i128,
+    pub quorum_required: i128,
+    pub queued: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

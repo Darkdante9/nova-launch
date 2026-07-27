@@ -223,4 +223,22 @@ describe('useNetwork', () => {
             expect(result.current.network).toBe('testnet');
         });
     });
+
+    describe('ledgerSequence', () => {
+        it('defaults to null', () => {
+            const { result } = renderHook(() => useNetwork());
+
+            expect(result.current.ledgerSequence).toBeNull();
+        });
+
+        it('updates via setLedgerSequence', () => {
+            const { result } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setLedgerSequence(123456);
+            });
+
+            expect(result.current.ledgerSequence).toBe(123456);
+        });
+    });
 });

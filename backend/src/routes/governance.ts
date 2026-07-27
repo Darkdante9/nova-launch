@@ -418,6 +418,84 @@ router.get(
 
 /**
  * @openapi
+ * /api/governance/queue:
+ *   get:
+ *     summary: Get the current proposal execution queue
+ *     description: >
+ *       Returns queued proposals grouped by proposalType and ordered by queue
+ *       time (FIFO). Proposals of the same type execute in the order they were
+ *       queued; different types are independent. Each entry includes its
+ *       0-based execution position within its type.
+ *     tags: [Governance]
+ *     parameters:
+ *       - in: query
+ *         name: proposalType
+ *         schema:
+ *           type: string
+ *           enum: [PARAMETER_CHANGE, ADMIN_TRANSFER, TREASURY_SPEND, CONTRACT_UPGRADE, CUSTOM]
+ *     responses:
+ *       200:
+ *         description: Current execution queue grouped by type
+ *       400:
+ *         description: Validation error
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  '/queue',
+  [
+    query('proposalType')
+      .optional()
+      .isIn(['PARAMETER_CHANGE', 'ADMIN_TRANSFER', 'TREASURY_SPEND', 'CONTRACT_UPGRADE', 'CUSTOM']),
+    validate,
+  ],
+  async (req: Request, res: Response) => {
+    try {
+      const { proposalType } = req.query;
+
+      const where: any = { status: 'QUEUED' };
+      if (proposalType) where.proposalType = proposalType;
+
+      // FIFO ordering: earliest-queued first.
+      const queued = await prisma.proposal.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+      });
+
+      // Group by type and assign a 0-based position within each type queue.
+      const queues: Record<string, any[]> = {};
+      for (const p of queued) {
+        const list = (queues[p.proposalType] ??= []);
+        list.push({
+          proposalId: p.proposalId,
+          tokenId: p.tokenId,
+          title: p.title,
+          proposalType: p.proposalType,
+          status: p.status,
+          position: list.length,
+          queuedAt: p.createdAt,
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          total: queued.length,
+          queues,
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching governance queue:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch governance queue',
+      });
+    }
+  }
+);
+
+/**
+ * @openapi
  * /api/governance/stats:
  *   get:
  *     summary: Get governance statistics

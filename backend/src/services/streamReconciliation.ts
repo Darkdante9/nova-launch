@@ -1,15 +1,26 @@
 import { PrismaClient, StreamStatus } from "@prisma/client";
-import { Logger } from "@nestjs/common";
+import { logger } from "../lib/logger";
+import { eventBus } from "./eventBus";
 
 export interface StreamDivergence {
   streamId: number;
   creator: string;
   recipient: string;
-  projectedBalance: string;
-  onChainBalance: string;
+  /** Name of the field that diverged, e.g. "balance" */
+  field: string;
+  projectedValue: string;
+  onChainValue: string;
   divergenceType: "mismatch" | "missing_onchain" | "missing_projected";
   severity: "error" | "warning";
   timestamp: Date;
+}
+
+/** Payload published on the eventBus when reconciliation finds a divergence */
+export interface StreamDivergenceDetectedPayload {
+  streamId: number;
+  field: string;
+  onChainValue: string;
+  projectedValue: string;
 }
 
 export interface StreamReconciliationResult {
@@ -22,7 +33,6 @@ export interface StreamReconciliationResult {
 }
 
 export class StreamReconciliationService {
-  private readonly logger = new Logger(StreamReconciliationService.name);
   private prisma: PrismaClient;
   private reconciliationIntervalMs: number;
   private lastReconciliation?: Date;
@@ -30,8 +40,8 @@ export class StreamReconciliationService {
   constructor(
     prisma: PrismaClient,
     reconciliationIntervalMs: number = parseInt(
-      process.env.STREAM_RECONCILIATION_INTERVAL_MS || "3600000"
-    ) // 1 hour default
+      process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000"
+    ) // 5 minutes default
   ) {
     this.prisma = prisma;
     this.reconciliationIntervalMs = reconciliationIntervalMs;
@@ -39,7 +49,7 @@ export class StreamReconciliationService {
 
   async reconcile(): Promise<StreamReconciliationResult> {
     const startTime = Date.now();
-    this.logger.debug("Starting stream settlement reconciliation");
+    logger.debug("Starting stream settlement reconciliation");
 
     const divergences: StreamDivergence[] = [];
     const errors: string[] = [];
@@ -73,16 +83,26 @@ export class StreamReconciliationService {
             onChainBalance !== null &&
             projectedBalance !== onChainBalance.toString()
           ) {
-            divergences.push({
+            const divergence: StreamDivergence = {
               streamId: stream.streamId,
               creator: stream.creator,
               recipient: stream.recipient,
-              projectedBalance,
-              onChainBalance: onChainBalance.toString(),
+              field: "balance",
+              projectedValue: projectedBalance,
+              onChainValue: onChainBalance.toString(),
               divergenceType: "mismatch",
               severity: "error",
               timestamp: new Date(),
-            });
+            };
+            divergences.push(divergence);
+
+            const eventPayload: StreamDivergenceDetectedPayload = {
+              streamId: divergence.streamId,
+              field: divergence.field,
+              onChainValue: divergence.onChainValue,
+              projectedValue: divergence.projectedValue,
+            };
+            await eventBus.publish("stream.divergence_detected", eventPayload);
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -93,7 +113,7 @@ export class StreamReconciliationService {
       this.lastReconciliation = new Date();
 
       if (divergences.length > 0) {
-        this.logger.warn(
+        logger.warn(
           `Found ${divergences.length} stream divergences during reconciliation`
         );
       }
@@ -108,7 +128,7 @@ export class StreamReconciliationService {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Reconciliation failed: ${msg}`);
+      logger.error(`Reconciliation failed: ${msg}`);
       errors.push(`Reconciliation failed: ${msg}`);
 
       return {
@@ -136,7 +156,7 @@ export class StreamReconciliationService {
       // In production, this would call a blockchain RPC or contract query
       return BigInt(0);
     } catch (err) {
-      this.logger.warn(`Failed to fetch on-chain balance for stream ${streamId}`);
+      logger.warn(`Failed to fetch on-chain balance for stream ${streamId}`);
       return null;
     }
   }
@@ -177,9 +197,9 @@ export class StreamReconciliationService {
     if (result.divergences.length > 0) {
       lines.push("  DIVERGENCES:");
       result.divergences.forEach((div) => {
-        lines.push(`    ❌ Stream ${div.streamId}`);
-        lines.push(`       Projected: ${div.projectedBalance}`);
-        lines.push(`       On-chain:  ${div.onChainBalance}`);
+        lines.push(`    ❌ Stream ${div.streamId} (${div.field})`);
+        lines.push(`       Projected: ${div.projectedValue}`);
+        lines.push(`       On-chain:  ${div.onChainValue}`);
       });
     } else {
       lines.push("  ✅ All streams reconciled successfully");

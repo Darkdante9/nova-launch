@@ -1,4 +1,4 @@
-use crate::{storage, types::Error};
+use crate::{events, storage, types::Error};
 use soroban_sdk::{symbol_short, Address, Env};
 
 /// Freeze an address for a specific token
@@ -44,7 +44,7 @@ pub fn freeze_address(
     let token_info = match storage::get_token_info_by_address(env, token_address) {
         Some(info) => info,
         None => {
-            events::emit_error_detail(env, Error::TokenNotFound as u32, 0);
+            events::emit_error_detail(env, Error::TokenNotFound.0, 0);
             return Err(Error::TokenNotFound);
         }
     };
@@ -61,13 +61,13 @@ pub fn freeze_address(
 
     // Verify freeze is enabled for this token
     if !token_info.freeze_enabled {
-        events::emit_error_detail(env, Error::Unauthorized as u32, token_info.token_index as i128);
+        events::emit_error_detail(env, Error::Unauthorized.0, 0);
         return Err(Error::Unauthorized);
     }
 
     // Check if address is already frozen
     if storage::is_address_frozen(env, token_address, address_to_freeze) {
-        events::emit_error_detail(env, Error::InvalidParameters as u32, 1); // 1 = already frozen
+        events::emit_error_detail(env, Error::InvalidParameters.0, 1); // 1 = already frozen
         return Err(Error::InvalidParameters);
     }
 
@@ -130,7 +130,7 @@ pub fn unfreeze_address(
     let token_info = match storage::get_token_info_by_address(env, token_address) {
         Some(info) => info,
         None => {
-            events::emit_error_detail(env, Error::TokenNotFound as u32, 0);
+            events::emit_error_detail(env, Error::TokenNotFound.0, 0);
             return Err(Error::TokenNotFound);
         }
     };
@@ -147,13 +147,13 @@ pub fn unfreeze_address(
 
     // Verify freeze is enabled for this token
     if !token_info.freeze_enabled {
-        events::emit_error_detail(env, Error::Unauthorized as u32, token_info.token_index as i128);
+        events::emit_error_detail(env, Error::Unauthorized.0, 0);
         return Err(Error::Unauthorized);
     }
 
     // Check if address is actually frozen
     if !storage::is_address_frozen(env, token_address, address_to_unfreeze) {
-        events::emit_error_detail(env, Error::InvalidParameters as u32, 2); // 2 = not frozen
+        events::emit_error_detail(env, Error::InvalidParameters.0, 2); // 2 = not frozen
         return Err(Error::InvalidParameters);
     }
 

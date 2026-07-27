@@ -62,9 +62,14 @@ never broaden it across tenants.
 | `burnExecuted`          | `tokenAddress: String`       | `BurnExecutedEvent`           | tokens are burned                            |
 | `proposalStatusChanged` | `tokenAddress: String`       | `ProposalStatusChangedEvent`  | a governance proposal transitions status     |
 | `vaultMatured`          | `recipientAddress: String`   | `VaultMaturedEvent`           | a vesting vault matures                       |
+| `campaignStepExecuted`  | `campaignId: Int`            | `CampaignStepExecutedEvent`   | a buyback campaign step completes on-chain    |
 
 All arguments are optional filters. `BigInt` amounts are serialised as `String`
 to avoid JS precision loss.
+
+`campaignStepExecuted` is the one exception to tenant scoping below — buyback
+campaigns are keyed by `tokenAddress`, not by a tenant-owned creator, so any
+authenticated connection receives all matching events.
 
 #### Schema (SDL)
 
@@ -74,6 +79,7 @@ type Subscription {
   burnExecuted(tokenAddress: String): BurnExecutedEvent!
   proposalStatusChanged(tokenAddress: String): ProposalStatusChangedEvent!
   vaultMatured(recipientAddress: String): VaultMaturedEvent!
+  campaignStepExecuted(campaignId: Int): CampaignStepExecutedEvent!
 }
 
 type TokenDeployedEvent {
@@ -113,6 +119,18 @@ type VaultMaturedEvent {
   amount: String!
   txHash: String!
   timestamp: DateTime!
+}
+
+type CampaignStepExecutedEvent {
+  campaignId: Int!
+  stepNumber: Int!
+  amount: String!
+  status: BuybackStepStatus!
+  txHash: String!
+  executedAt: DateTime!
+  totalSteps: Int!
+  executedAmount: String!
+  campaignStatus: CampaignStatus!
 }
 ```
 
@@ -154,7 +172,9 @@ services / event listeners, not by the GraphQL layer):
 | `burnExecuted`          | `burn.executed`                         |
 | `proposalStatusChanged` | `governance.proposal.statusChanged`     |
 | `vaultMatured`          | `vault.matured`                         |
+| `campaignStepExecuted`  | `campaign.step_executed`                |
 
 Each topic's payload must carry a `creatorAddress` so the stream can be tenant
-scoped consistently with the rest of the API.
+scoped consistently with the rest of the API — except `campaign.step_executed`,
+which has no creator concept (see above).
 </content>

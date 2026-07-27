@@ -13,6 +13,10 @@
 
 // Set env vars BEFORE any imports so module-level constants pick them up
 process.env.WEBHOOK_RETRY_DELAY_MS = '0'
+// This file is about subscription filtering, not rate limiting — raise the
+// per-tenant bucket so none of these calls are ever queued.
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = '100000'
+process.env.WEBHOOK_RATE_LIMIT_BURST = '10000'
 
 import nock from 'nock'
 import { describe, it, beforeEach, afterEach, vi, expect } from 'vitest'

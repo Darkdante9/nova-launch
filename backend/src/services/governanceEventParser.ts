@@ -1,12 +1,57 @@
 import { PrismaClient, ProposalStatus, ProposalType } from '@prisma/client';
+import axios from 'axios';
 import {
   ProposalCreatedEvent,
   VoteCastEvent,
   ProposalExecutedEvent,
   ProposalCancelledEvent,
   ProposalStatusChangedEvent,
+  ProposalStateSnapshotEvent,
   GovernanceEvent,
 } from '../types/governance';
+import { GovernanceEventMapper } from './governanceEventMapper';
+import { EventCursorStore } from './eventCursorStore';
+
+/**
+ * Default bounded catchup window in ledgers.
+ * Prevents unbounded replay on first start or after very long downtime.
+ * Can be overridden via the GOVERNANCE_CATCHUP_WINDOW environment variable.
+ */
+export const DEFAULT_GOVERNANCE_CATCHUP_WINDOW = 10_000;
+
+/**
+ * Horizon transport abstraction used by catchupFromCursor.
+ * Matches the HorizonTransport interface in stellarEventListener.ts so the
+ * same mock can be reused in tests.
+ */
+export interface GovernanceCatchupTransport {
+  getEvents(url: string, params: Record<string, unknown>): Promise<{
+    data: { _embedded?: { records: RawStellarEvent[] } };
+  }>;
+}
+
+export interface RawStellarEvent {
+  type: string;
+  ledger: number;
+  ledger_close_time: string;
+  contract_id: string;
+  id: string;
+  paging_token: string;
+  topic: string[];
+  value: unknown;
+  in_successful_contract_call: boolean;
+  transaction_hash: string;
+}
+
+/**
+ * Default transport that delegates to axios — identical to DefaultHorizonTransport
+ * in stellarEventListener.ts.
+ */
+export class DefaultGovernanceCatchupTransport implements GovernanceCatchupTransport {
+  async getEvents(url: string, params: Record<string, unknown>) {
+    return axios.get(url, { params, timeout: 30_000 });
+  }
+}
 
 /**
  * Contract error details structure
@@ -19,6 +64,16 @@ export interface ContractErrorDetails {
   retryable: boolean;
   severity: 'low' | 'medium' | 'high' | 'critical';
   rawError?: string;
+}
+
+/**
+ * Validation error thrown when a governance event payload is malformed.
+ */
+export class GovernanceEventValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GovernanceEventValidationError';
+  }
 }
 
 /**
@@ -45,16 +100,60 @@ const KNOWN_CONTRACT_ERRORS = new Set([
   'CONTRACT_PAUSED',
 ]);
 
-/**
- * Governance Event Parser
- * 
- * Parses and persists governance events from the blockchain
- * into the database for analytics and tracking.
- * 
- * Preserves structured error details aligned with frontend error semantics.
- */
-export class GovernanceEventParser {
-  constructor(private prisma: PrismaClient) {}
+  /**
+   * Governance Event Parser
+   * 
+   * Parses and persists governance events from the blockchain
+   * into the database for analytics and tracking.
+   * 
+   * Preserves structured error details aligned with frontend error semantics.
+   */
+  export class GovernanceEventParser {
+    private readonly mapper: GovernanceEventMapper;
+    private readonly cursorStore: EventCursorStore;
+    private readonly transport: GovernanceCatchupTransport;
+
+    constructor(
+      private prisma: PrismaClient,
+      opts?: {
+        transport?: GovernanceCatchupTransport;
+        cursorStore?: EventCursorStore;
+      },
+    ) {
+      this.mapper = new GovernanceEventMapper();
+      this.cursorStore = opts?.cursorStore ?? new EventCursorStore(prisma);
+      this.transport = opts?.transport ?? new DefaultGovernanceCatchupTransport();
+    }
+
+    private validateBigIntString(value: unknown, field: string): string {
+      const str = typeof value === 'string' ? value : String(value ?? '');
+      if (!/^-?\d+$/.test(str)) {
+        throw new GovernanceEventValidationError(`Invalid ${field}: ${str}`);
+      }
+      return str;
+    }
+
+    private validateProposalStatus(status: unknown, field: string): ProposalStatus {
+      const str = typeof status === 'string' ? status.toLowerCase() : String(status ?? '').toLowerCase();
+      const statusMap: Record<string, ProposalStatus> = {
+        'active': ProposalStatus.ACTIVE,
+        'passed': ProposalStatus.PASSED,
+        'rejected': ProposalStatus.REJECTED,
+        'queued': ProposalStatus.QUEUED,
+        'executed': ProposalStatus.EXECUTED,
+        'cancelled': ProposalStatus.CANCELLED,
+        'expired': ProposalStatus.EXPIRED,
+        'created': ProposalStatus.ACTIVE,
+        'succeeded': ProposalStatus.PASSED,
+        'defeated': ProposalStatus.REJECTED,
+        'failed': ProposalStatus.REJECTED,
+      };
+      const mapped = statusMap[str];
+      if (!mapped) {
+        throw new GovernanceEventValidationError(`Unknown ${field}: ${String(status)}`);
+      }
+      return mapped;
+    }
 
   /**
    * Parse contract error from error response
@@ -140,6 +239,9 @@ export class GovernanceEventParser {
    */
   async parseProposalCreatedEvent(event: ProposalCreatedEvent): Promise<void> {
     try {
+      const quorum = this.validateBigIntString(event.quorum, 'quorum');
+      const threshold = this.validateBigIntString(event.threshold, 'threshold');
+
       await this.prisma.proposal.upsert({
         where: { proposalId: event.proposalId },
         create: {
@@ -152,8 +254,8 @@ export class GovernanceEventParser {
           status: ProposalStatus.ACTIVE,
           startTime: event.startTime,
           endTime: event.endTime,
-          quorum: BigInt(event.quorum),
-          threshold: BigInt(event.threshold),
+          quorum: BigInt(quorum),
+          threshold: BigInt(threshold),
           metadata: event.metadata,
           txHash: event.txHash,
           createdAt: event.timestamp,
@@ -173,6 +275,8 @@ export class GovernanceEventParser {
    */
   async parseVoteCastEvent(event: VoteCastEvent): Promise<void> {
     try {
+      const weight = this.validateBigIntString(event.weight, 'vote weight');
+
       const proposal = await this.prisma.proposal.findUnique({
         where: { proposalId: event.proposalId },
       });
@@ -187,7 +291,7 @@ export class GovernanceEventParser {
           proposalId: proposal.id,
           voter: event.voter,
           support: event.support,
-          weight: BigInt(event.weight),
+          weight: BigInt(weight),
           reason: event.reason,
           txHash: event.txHash,
           timestamp: event.timestamp,
@@ -308,16 +412,77 @@ export class GovernanceEventParser {
         throw new Error(`Proposal ${event.proposalId} not found`);
       }
 
+      const newStatus = this.validateProposalStatus(event.newStatus, 'proposal status');
+
       await this.prisma.proposal.update({
         where: { id: proposal.id },
         data: {
-          status: event.newStatus as ProposalStatus,
+          status: newStatus,
         },
       });
 
       console.log(`Proposal ${event.proposalId} status changed from ${event.oldStatus} to ${event.newStatus}`);
     } catch (error) {
       console.error(`Error parsing proposal status changed event:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Parse and persist a proposal state snapshot event (#1383).
+   *
+   * Snapshots are periodic/on-demand checkpoints of a proposal's fully
+   * accumulated state (status + vote tallies as of a given ledger). They
+   * let an indexer fast-forward instead of replaying every event from
+   * genesis: this handler simply fast-forwards the proposal's `status` to
+   * match the snapshot.
+   *
+   * Snapshots are derived from, and must always agree with, the same
+   * persisted contract state used by `vote_cast`/`proposal_status_changed`
+   * events, so applying one is idempotent and never diverges from a full
+   * event replay — applying it twice (or out of order with a slightly
+   * stale snapshot) only ever re-asserts a status the proposal already
+   * passed through.
+   *
+   * Unlike the other handlers, a missing proposal is *not* treated as an
+   * error: a snapshot may be the very first event an indexer observes when
+   * fast-forwarding from a checkpoint, before the originating
+   * `proposal_created` event (which may predate the indexer's replay
+   * window) has been (re)played.
+   */
+  async parseProposalStateSnapshotEvent(event: ProposalStateSnapshotEvent): Promise<void> {
+    try {
+      const proposal = await this.prisma.proposal.findUnique({
+        where: { proposalId: event.proposalId },
+      });
+
+      if (!proposal) {
+        console.warn(
+          `[GovernanceEventParser] Snapshot for unknown proposal ${event.proposalId} ` +
+            `at ledger ${event.snapshotLedger} — skipping (proposal not yet indexed)`,
+        );
+        return;
+      }
+
+      const status = this.validateProposalStatus(event.status, 'snapshot status');
+      this.validateBigIntString(event.yesVotes, 'snapshot yesVotes');
+      this.validateBigIntString(event.noVotes, 'snapshot noVotes');
+      this.validateBigIntString(event.quorumRequired, 'snapshot quorumRequired');
+
+      await this.prisma.proposal.update({
+        where: { id: proposal.id },
+        data: {
+          status,
+        },
+      });
+
+      console.log(
+        `Proposal ${event.proposalId} snapshot at ledger ${event.snapshotLedger}: ` +
+          `status=${event.status} yes=${event.yesVotes} no=${event.noVotes} ` +
+          `quorumRequired=${event.quorumRequired}`,
+      );
+    } catch (error) {
+      console.error(`Error parsing proposal state snapshot event:`, error);
       throw error;
     }
   }
@@ -341,6 +506,9 @@ export class GovernanceEventParser {
         break;
       case 'proposal_status_changed':
         await this.parseProposalStatusChangedEvent(event);
+        break;
+      case 'proposal_state_snapshot':
+        await this.parseProposalStateSnapshotEvent(event);
         break;
       default:
         console.warn(`Unknown governance event type:`, event);

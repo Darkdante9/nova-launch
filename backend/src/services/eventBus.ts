@@ -9,11 +9,20 @@
  *  - Unsubscribe support
  *  - Dead-letter queue for failed handler invocations
  *  - Event history for replay / debugging
+ *  - Schema validation against event-schemas/ in non-production (#1406)
  *
- * Issue: #843
+ * Issue: #843, #1406
  */
 
 import { v4 as uuidv4 } from "uuid";
+import { validateEventPayload } from "./eventSchemaValidator";
+import { logger } from "../lib/logger";
+
+/**
+ * Whether the current process is running in production. Mirrors the
+ * `isProduction()` convention used elsewhere (e.g. `backend/src/routes/health.ts`).
+ */
+const isProduction = () => process.env.NODE_ENV === "production";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +39,12 @@ export interface BusEvent<T = unknown> {
   timestamp: string;
   /** Optional correlation ID for distributed tracing */
   correlationId?: string;
+  /**
+   * Monotonically incrementing sequence number assigned at publish time.
+   * Used by the catchup endpoint so clients can request missed events
+   * after a WebSocket reconnect (#1372).
+   */
+  sequence: number;
 }
 
 export type EventHandler<T = unknown> = (
@@ -58,6 +73,9 @@ export class EventBus {
   private handlers = new Map<string, Map<string, EventHandler>>();
   private history: BusEvent[] = [];
   private deadLetterQueue: DeadLetterEntry[] = [];
+
+  /** Monotonically incrementing sequence counter (#1372). */
+  private _sequence = 0;
 
   /** Maximum events kept in history. 0 = unlimited. */
   private readonly maxHistory: number;
@@ -128,19 +146,39 @@ export class EventBus {
    * Handlers are invoked concurrently. A failing handler is caught and
    * recorded in the dead-letter queue — it does not affect other handlers.
    *
+   * Schema validation (#1406): in non-production environments
+   * (`NODE_ENV !== "production"`), `payload` is validated against the JSON
+   * Schema registered for `type` in `event-schemas/` *before* the event is
+   * recorded or dispatched. A mismatch throws `EventSchemaValidationError`
+   * synchronously so schema drift is caught immediately in dev/CI/tests
+   * rather than silently corrupting consumers. Event types with no
+   * registered schema are not validated. In production, validation is
+   * skipped entirely (logged at debug level) so a schema bug can never take
+   * down a live publish path — production payload drift is instead expected
+   * to be caught by the CI codegen-sync check and by non-prod testing.
+   *
    * @returns The fully constructed `BusEvent` that was dispatched.
+   * @throws {EventSchemaValidationError} if `payload` fails schema validation
+   *   outside production.
    */
   async publish<T = unknown>(
     type: string,
     payload: T,
     options: { correlationId?: string } = {}
   ): Promise<BusEvent<T>> {
+    if (!isProduction()) {
+      validateEventPayload(type, payload);
+    } else {
+      logger.debug("[EventBus] schema validation skipped in production", { type });
+    }
+
     const event: BusEvent<T> = {
       id: uuidv4(),
       type,
       payload,
       timestamp: new Date().toISOString(),
       correlationId: options.correlationId,
+      sequence: ++this._sequence,
     };
 
     this.recordHistory(event);
@@ -186,6 +224,12 @@ export class EventBus {
     this.handlers.clear();
     this.history = [];
     this.deadLetterQueue = [];
+    this._sequence = 0;
+  }
+
+  /** Current sequence counter value — highest sequence number emitted so far. */
+  get currentSequence(): number {
+    return this._sequence;
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

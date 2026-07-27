@@ -36,6 +36,12 @@ export interface WebhookDeliveryLog {
   createdAt: string;
 }
 
+export interface WebhookDeliveryVerification {
+  verified: boolean;
+  keyId: string;
+  algorithm: string;
+}
+
 export interface CreateWebhookInput {
   url: string;
   tokenAddress?: string | null;
@@ -111,10 +117,38 @@ export const webhookApi = {
     request<WebhookDeliveryLog[]>(`/${id}/logs?limit=${limit}`),
 
   /**
+   * Get HMAC signature verification status for a single delivery log entry
+   */
+  getDeliveryVerification: (deliveryId: string) =>
+    request<WebhookDeliveryVerification>(`/deliveries/${deliveryId}/verification`),
+
+  /**
    * Test a webhook subscription
    */
   testWebhook: (id: string) =>
     request<{ success: boolean; message: string }>(`/${id}/test`, {
+      method: "POST",
+    }),
+
+  /**
+   * Get dead-letter entries for a subscription
+   */
+  getDeadLetters: (id: string, limit = 50) =>
+    request<DeadLetterEntry[]>(`/${id}/dead-letters?limit=${limit}`),
+
+  /**
+   * Retry a dead-letter delivery
+   */
+  retryDeadLetter: (id: string) =>
+    request<{ success: boolean; message: string }>(`/dead-letters/${id}/retry`, {
+      method: "POST",
+    }),
+
+  /**
+   * Skip/discard a dead-letter delivery
+   */
+  discardDeadLetter: (id: string) =>
+    request<{ success: boolean; message: string }>(`/dead-letters/${id}/skip`, {
       method: "POST",
     }),
 };

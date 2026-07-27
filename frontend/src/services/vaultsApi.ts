@@ -48,6 +48,23 @@ export function calcLedgerProgress(
   return Math.min(100, Math.max(0, pct));
 }
 
+export interface WithdrawalRecord {
+  id: string;
+  vaultId: number;
+  amount: string;
+  timestamp: string;
+  txHash: string;
+  recipient: string;
+}
+
+export interface PaginatedWithdrawals {
+  withdrawals: WithdrawalRecord[];
+  nextCursor?: string;
+  prevCursor?: string;
+  hasMore: boolean;
+  totalCount?: number;
+}
+
 export const vaultsApi = {
   getById: (id: number) =>
     request<VaultProjection>(`/vaults/${id}`),
@@ -57,4 +74,11 @@ export const vaultsApi = {
 
   getByBeneficiary: (address: string) =>
     request<VaultProjection[]>(`/vaults/beneficiary/${address}`),
+
+  getWithdrawalHistory: (vaultId: number, cursor?: string): Promise<PaginatedWithdrawals> => {
+    const query = new URLSearchParams();
+    if (cursor) query.append('cursor', cursor);
+    query.append('limit', '10');
+    return request<PaginatedWithdrawals>(`/vaults/${vaultId}/withdrawals?${query.toString()}`);
+  },
 };

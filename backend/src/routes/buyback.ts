@@ -3,9 +3,17 @@ import { PrismaClient } from '@prisma/client';
 import { param, body, query } from 'express-validator';
 import { validate } from '../middleware/validation';
 import { campaignProjectionService } from '../services/campaignProjectionService';
+import { eventBus } from '../services/eventBus';
 
 const router = Router();
 const prisma = new PrismaClient();
+
+/** Lazily-initialised shared Redis client for distributed locks. */
+let _lockRedis: ReturnType<typeof createRedisClient> | null = null;
+function getLockRedis(): ReturnType<typeof createRedisClient> {
+  if (!_lockRedis) _lockRedis = createRedisClient();
+  return _lockRedis;
+}
 
 router.post(
   '/campaigns',
@@ -158,12 +166,23 @@ router.post(
     validate,
   ],
   async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-      const { txHash } = req.body;
+    const campaignId = Number(req.params.id);
+    const { txHash } = req.body;
 
+    // ── Distributed lock ────────────────────────────────────────────────────
+    // Derive the step number from the current campaign state before acquiring
+    // the lock. We need a quick read first to know which step we're locking.
+    // The lock is keyed by campaign_id:step_number and has a 30-second TTL,
+    // which is longer than the maximum expected on-chain submission time.
+
+    const requestId = randomUUID();
+    let lockAcquired = false;
+    let lockedStepNumber: number | null = null;
+
+    try {
+      // First, fetch the campaign to determine the current step number.
       const campaign = await prisma.buybackCampaign.findUnique({
-        where: { id: Number(id) },
+        where: { id: campaignId },
         include: { steps: true },
       });
 
@@ -178,6 +197,37 @@ router.post(
       if (campaign.currentStep >= campaign.totalSteps) {
         return res.status(400).json({ error: 'All steps completed' });
       }
+
+      lockedStepNumber = campaign.currentStep;
+
+      // Attempt to acquire the distributed lock for this campaign step.
+      let lockResult: Awaited<ReturnType<typeof acquireStepLock>> | null = null;
+      try {
+        lockResult = await acquireStepLock(
+          getLockRedis(),
+          campaignId,
+          lockedStepNumber,
+          requestId,
+        );
+      } catch (redisErr) {
+        // Redis unavailable — fail open: log and proceed without the lock.
+        console.error(
+          '[StepLock] Redis unavailable, proceeding without lock:',
+          (redisErr as Error).message,
+        );
+      }
+
+      if (lockResult && !lockResult.acquired) {
+        // Another request is already processing this step.
+        return res.status(202).json({
+          status: 'PROCESSING',
+          holderRequestId: lockResult.holderRequestId,
+        });
+      }
+
+      lockAcquired = lockResult?.acquired ?? false;
+
+      // ── Business logic (unchanged) ────────────────────────────────────────
 
       const currentStep = campaign.steps.find(
         (s) => s.stepNumber === campaign.currentStep
@@ -205,7 +255,7 @@ router.post(
       ).toString();
 
       const updatedCampaign = await prisma.buybackCampaign.update({
-        where: { id: Number(id) },
+        where: { id: campaignId },
         data: {
           executedAmount: newExecutedAmount,
           currentStep: campaign.currentStep + 1,
@@ -221,6 +271,23 @@ router.post(
         },
       });
 
+      // Fire-and-forget: a subscriber error must not roll back the executed step.
+      eventBus
+        .publish('campaign.step_executed', {
+          campaignId: updatedCampaign.id,
+          stepNumber: updatedStep.stepNumber,
+          amount: updatedStep.amount,
+          status: updatedStep.status,
+          txHash: updatedStep.txHash,
+          executedAt: updatedStep.executedAt.toISOString(),
+          totalSteps: updatedCampaign.totalSteps,
+          executedAmount: updatedCampaign.executedAmount,
+          campaignStatus: updatedCampaign.status,
+        })
+        .catch((err) =>
+          console.error('Failed to publish campaign.step_executed event:', err)
+        );
+
       res.json({
         campaign: updatedCampaign,
         executedStep: updatedStep,
@@ -228,6 +295,15 @@ router.post(
     } catch (error) {
       console.error('Error executing step:', error);
       res.status(500).json({ error: 'Failed to execute step' });
+    } finally {
+      // Always release the lock (success or failure) to prevent lock leakage.
+      if (lockAcquired && lockedStepNumber !== null) {
+        try {
+          await releaseStepLock(getLockRedis(), campaignId, lockedStepNumber, requestId);
+        } catch (releaseErr) {
+          console.error('[StepLock] Failed to release lock:', (releaseErr as Error).message);
+        }
+      }
     }
   }
 );

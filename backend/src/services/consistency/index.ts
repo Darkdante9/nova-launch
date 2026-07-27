@@ -10,4 +10,5 @@ export {
   type ConsistencyDiff,
   type ConsistencyCheckResult,
   type VerifierConfig,
+  type ReconciliationResult,
 } from "./onchainProjectionVerifier";

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/token.deployed.schema.json",
+  "title": "TokenDeployedEvent",
+  "description": "Published when a token deployment is confirmed. NOTE: two distinct payload shapes are currently published under this event type — backend/src/services/batchTokenDeployService.ts publishes {tokenId, address, creator, decimals, initialSupply, metadataUri, ...}, while the GraphQL `tokenDeployed` subscription (backend/src/graphql/resolvers.ts, TokenDeployedPayload / SUBSCRIPTION_TOPICS.tokenDeployed) expects {tokenAddress, creatorAddress, totalSupply, txHash, timestamp, ...}. This is pre-existing schema drift this registry is intended to surface; both shapes are accepted here (via anyOf) until they are reconciled onto a single shape in a follow-up.",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "token.deployed",
+  "anyOf": [
+    {
+      "description": "Shape published by batchTokenDeployService.ts.",
+      "type": "object",
+      "properties": {
+        "tokenId": { "type": "string", "description": "Primary key of the Token record." },
+        "address": { "type": "string", "description": "Deployed contract address." },
+        "creator": { "type": "string", "description": "Stellar/Soroban address of the token creator." },
+        "name": { "type": "string" },
+        "symbol": { "type": "string" },
+        "decimals": { "type": "integer", "minimum": 0 },
+        "initialSupply": {
+          "description": "Stringified bigint (string) or raw bigint depending on the publisher."
+        },
+        "metadataUri": { "type": ["string", "null"] }
+      },
+      "required": ["tokenId", "address", "creator", "name", "symbol", "decimals", "initialSupply"]
+    },
+    {
+      "description": "Shape expected by the GraphQL tokenDeployed subscription (TokenDeployedPayload).",
+      "type": "object",
+      "properties": {
+        "tokenAddress": { "type": "string" },
+        "creatorAddress": { "type": "string", "description": "Used for tenant scoping (TenantScopedPayload)." },
+        "name": { "type": "string" },
+        "symbol": { "type": "string" },
+        "totalSupply": {
+          "description": "Stringified bigint (string) or raw bigint — see TokenDeployedPayload."
+        },
+        "txHash": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["tokenAddress", "creatorAddress", "name", "symbol", "totalSupply", "txHash", "timestamp"]
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import {
   EventSourcingService,
   InMemoryEventStore,
   DomainEvent,
+  AggregateSnapshot,
 } from './eventSourcing';
 
 describe('EventSourcingService', () => {
@@ -139,6 +140,124 @@ describe('EventSourcingService', () => {
       const history = await service.getAggregateHistory(`agg-${i}`);
       expect(history).toHaveLength(1);
     }
+  });
+});
+
+describe('EventSourcingService — snapshot-based replay', () => {
+  let service: EventSourcingService;
+  let eventStore: InMemoryEventStore;
+
+  // Simple counter reducer: accumulates a running total from each event's `value`.
+  const counterReducer = (
+    state: Record<string, any>,
+    event: DomainEvent
+  ): Record<string, any> => ({
+    ...state,
+    total: (state.total ?? 0) + (event.data.value ?? 0),
+    count: (state.count ?? 0) + 1,
+  });
+
+  beforeEach(() => {
+    eventStore = new InMemoryEventStore();
+    service = new EventSourcingService(eventStore);
+  });
+
+  it('createSnapshot returns correct version matching the latest event', async () => {
+    await service.publishEvent('agg-snap', 'Increment', { value: 10 });
+    await service.publishEvent('agg-snap', 'Increment', { value: 20 });
+    await service.publishEvent('agg-snap', 'Increment', { value: 30 });
+
+    const state = await service.rebuildStateFromSnapshot('agg-snap', counterReducer);
+    const snapshot = await service.createSnapshot('agg-snap', state);
+
+    expect(snapshot.version).toBe(3);
+    expect(snapshot.aggregateId).toBe('agg-snap');
+    expect(snapshot.state).toEqual({ total: 60, count: 3 });
+  });
+
+  it('rebuildStateFromSnapshot produces identical result with and without a snapshot', async () => {
+    // Publish several events
+    for (let i = 1; i <= 5; i++) {
+      await service.publishEvent('agg-equiv', 'Increment', { value: i * 10 });
+    }
+
+    // Full replay (no snapshot yet)
+    const fullState = await service.rebuildStateFromSnapshot('agg-equiv', counterReducer);
+
+    // Save snapshot at current version, then publish more events
+    await service.createSnapshot('agg-equiv', fullState);
+
+    for (let i = 6; i <= 8; i++) {
+      await service.publishEvent('agg-equiv', 'Increment', { value: i * 10 });
+    }
+
+    // Snapshot-assisted replay (starts from snapshot, replays only events 6–8)
+    const snapshotState = await service.rebuildStateFromSnapshot('agg-equiv', counterReducer);
+
+    // Full replay from scratch for comparison
+    const freshStore = new InMemoryEventStore();
+    const freshService = new EventSourcingService(freshStore);
+    for (let i = 1; i <= 8; i++) {
+      await freshService.publishEvent('agg-equiv', 'Increment', { value: i * 10 });
+    }
+    const freshFullState = await freshService.rebuildStateFromSnapshot('agg-equiv', counterReducer);
+
+    expect(snapshotState).toEqual(freshFullState);
+    expect(snapshotState.total).toBe(360); // 10+20+30+40+50+60+70+80
+    expect(snapshotState.count).toBe(8);
+  });
+
+  it('forward-compatibility: new fields default correctly when absent from an old snapshot', async () => {
+    // Simulate an "old" snapshot that lacks a field the reducer would normally produce
+    const oldSnapshot: AggregateSnapshot = {
+      id: 'snap-legacy',
+      aggregateId: 'agg-compat',
+      version: 2,
+      state: { total: 30 }, // `count` field absent — simulates old snapshot format
+      timestamp: Date.now(),
+    };
+    await eventStore.saveSnapshot(oldSnapshot);
+
+    // Events after the snapshot version
+    const event3: DomainEvent = {
+      id: '3',
+      aggregateId: 'agg-compat',
+      type: 'Increment',
+      timestamp: Date.now(),
+      version: 3,
+      data: { value: 40 },
+    };
+    await eventStore.append(event3);
+
+    // Reducer handles missing `count` gracefully via the `?? 0` default
+    const state = await service.rebuildStateFromSnapshot('agg-compat', counterReducer);
+
+    expect(state.total).toBe(70);  // 30 (snapshot) + 40 (event3)
+    expect(state.count).toBe(1);   // only 1 event replayed; old snapshot had no count
+  });
+
+  it('auto-snapshot triggers at the configured interval', async () => {
+    const interval = 3;
+    const autoService = new EventSourcingService(eventStore, interval);
+
+    // Publish exactly `interval` events — the Nth event should trigger an auto-snapshot
+    for (let i = 1; i <= interval; i++) {
+      await autoService.publishEvent('agg-auto', 'Increment', { value: i }, undefined, counterReducer);
+    }
+
+    const snapshot = await eventStore.getLatestSnapshot('agg-auto');
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.version).toBe(interval);
+    expect(snapshot!.state).toEqual({ total: 6, count: 3 }); // 1+2+3
+
+    // Publish more events past the interval boundary
+    for (let i = interval + 1; i <= interval * 2; i++) {
+      await autoService.publishEvent('agg-auto', 'Increment', { value: i }, undefined, counterReducer);
+    }
+
+    // A second snapshot should now exist at version interval*2
+    const latestSnapshot = await eventStore.getLatestSnapshot('agg-auto');
+    expect(latestSnapshot!.version).toBe(interval * 2);
   });
 });
 

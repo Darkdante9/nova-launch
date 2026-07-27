@@ -2,6 +2,12 @@
 process.env.WEBHOOK_MAX_RETRIES = '3'
 process.env.WEBHOOK_TIMEOUT_MS = '200'
 process.env.WEBHOOK_RETRY_DELAY_MS = '0'
+// Several property blocks below run 10-20 fast-check iterations against a
+// single shared createdBy/"tenant" within one `it()`. Raise the per-tenant
+// rate-limit bucket so this chaos suite (which is not about rate limiting)
+// never queues a delivery.
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = '100000'
+process.env.WEBHOOK_RATE_LIMIT_BURST = '10000'
 
 import nock from 'nock'
 import { describe, it, beforeEach, afterEach, vi, expect } from 'vitest'

@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { eventBus } from "./eventBus";
 
 export interface RawTokenEvent {
   type: "tok_reg" | "tok_burn" | "adm_burn" | "tok_meta";
@@ -103,6 +104,21 @@ export class TokenEventParser {
         },
       }),
     ]);
+
+    // Fire-and-forget: notifies the leaderboard service (and any other
+    // subscriber) to incrementally update its Redis sorted-set ranking
+    // instead of waiting for a full recompute. Mirrors how
+    // batchTokenDeployService publishes "token.deployed".
+    eventBus
+      .publish("token.burned", {
+        tokenId: token.id,
+        tokenAddress: event.tokenAddress,
+        amount: amount.toString(),
+        isAdminBurn,
+      })
+      .catch((err) =>
+        console.error("[TokenEventParser] event emission failed:", err)
+      );
   }
 
   private async handleMetadataUpdate(event: RawTokenEvent): Promise<void> {

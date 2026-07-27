@@ -79,6 +79,14 @@ export const validateSubscriptionId = [
 ];
 
 /**
+ * Validation rules for delivery ID parameter
+ */
+export const validateDeliveryId = [
+  param("id").isUUID().withMessage("Invalid delivery ID format"),
+  validate,
+];
+
+/**
  * Validation rules for listing subscriptions
  */
 export const validateListSubscriptions = [

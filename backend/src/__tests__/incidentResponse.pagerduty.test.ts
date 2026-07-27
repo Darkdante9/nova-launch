@@ -14,6 +14,8 @@ import {
   alertDatabasePoolExhausted,
   resolveEventListenerDown,
   resolveHighApiErrorRate,
+  alertStreamDivergence,
+  resolveStreamDivergence,
 } from "/workspaces/nova-launch/monitoring/pagerduty/incident-response";
 
 // ---------------------------------------------------------------------------
@@ -428,6 +430,85 @@ describe("PagerDuty Incident Response", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Stream divergence alerts
+  // -------------------------------------------------------------------------
+
+  describe("stream divergence alerts", () => {
+    it("alertStreamDivergence uses error severity (P2) and a per-stream/field dedup key", async () => {
+      let capturedBody = "";
+      vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+        const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+        const req = Object.assign(new EventEmitter(), {
+          write: vi.fn((data: string) => {
+            capturedBody = data;
+          }),
+          end: vi.fn(() => {
+            if (callback) {
+              (callback as (res: any) => void)(res);
+              res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+              res.emit("end");
+            }
+          }),
+        });
+        return req as any;
+      });
+
+      const original = process.env.PAGERDUTY_ROUTING_KEY;
+      process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+      try {
+        await alertStreamDivergence({
+          streamId: 42,
+          field: "balance",
+          onChainValue: "100",
+          projectedValue: "150",
+        });
+        const parsed = JSON.parse(capturedBody);
+        expect(parsed.payload.severity).toBe("error");
+        expect(parsed.dedup_key).toBe("nova-stream-divergence-42-balance");
+        expect(parsed.payload.custom_details).toEqual({
+          streamId: 42,
+          field: "balance",
+          onChainValue: "100",
+          projectedValue: "150",
+        });
+      } finally {
+        process.env.PAGERDUTY_ROUTING_KEY = original;
+      }
+    });
+
+    it("resolveStreamDivergence sends resolve for the matching dedup key", async () => {
+      let capturedBody = "";
+      vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+        const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+        const req = Object.assign(new EventEmitter(), {
+          write: vi.fn((data: string) => {
+            capturedBody = data;
+          }),
+          end: vi.fn(() => {
+            if (callback) {
+              (callback as (res: any) => void)(res);
+              res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+              res.emit("end");
+            }
+          }),
+        });
+        return req as any;
+      });
+
+      const original = process.env.PAGERDUTY_ROUTING_KEY;
+      process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+      try {
+        await resolveStreamDivergence(42, "balance");
+        const parsed = JSON.parse(capturedBody);
+        expect(parsed.event_action).toBe("resolve");
+        expect(parsed.dedup_key).toBe("nova-stream-divergence-42-balance");
+      } finally {
+        process.env.PAGERDUTY_ROUTING_KEY = original;
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Edge cases
   // -------------------------------------------------------------------------
 
@@ -488,5 +569,332 @@ describe("PagerDuty Incident Response", () => {
       const parsed = JSON.parse(capturedBody);
       expect(parsed.payload.summary).toBe("Unique summary text");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEVERITY_ROUTING map
+// ---------------------------------------------------------------------------
+
+describe("SEVERITY_ROUTING", () => {
+  it("maps contract-divergence to P1 critical with an escalation policy", () => {
+    const route = SEVERITY_ROUTING["contract-divergence"];
+    expect(route.priority).toBe("P1");
+    expect(route.severity).toBe("critical");
+    expect(route.escalationPolicyId).toMatch(/^EP-/);
+  });
+
+  it("maps auth-failure-spike to P2 error", () => {
+    const route = SEVERITY_ROUTING["auth-failure-spike"];
+    expect(route.priority).toBe("P2");
+    expect(route.severity).toBe("error");
+    expect(route.escalationPolicyId).toMatch(/^EP-/);
+  });
+
+  it("maps db-connection-loss to P1 critical", () => {
+    const route = SEVERITY_ROUTING["db-connection-loss"];
+    expect(route.priority).toBe("P1");
+    expect(route.severity).toBe("critical");
+  });
+
+  it("maps disk-space-low to P3 warning", () => {
+    const route = SEVERITY_ROUTING["disk-space-low"];
+    expect(route.priority).toBe("P3");
+    expect(route.severity).toBe("warning");
+    expect(route.escalationPolicyId).toMatch(/^EP-/);
+  });
+
+  it("every event type has a non-empty escalation policy ID", () => {
+    for (const [, route] of Object.entries(SEVERITY_ROUTING)) {
+      expect(route.escalationPolicyId.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatchAlert — severity routing
+// ---------------------------------------------------------------------------
+
+function mockHttpsSuccess(capturedBodyRef: { value: string }) {
+  vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+    const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+    const req = Object.assign(new EventEmitter(), {
+      write: vi.fn((data: string) => {
+        capturedBodyRef.value = data;
+      }),
+      end: vi.fn(() => {
+        if (callback) {
+          (callback as (res: any) => void)(res);
+          res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+          res.emit("end");
+        }
+      }),
+    });
+    return req as any;
+  });
+}
+
+describe("dispatchAlert - severity routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    _resetRateLimiter();
+  });
+
+  it("routes contract-divergence as P1 critical to PagerDuty", async () => {
+    const body = { value: "" };
+    mockHttpsSuccess(body);
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("contract-divergence", {
+        summary: "Contract state diverged from expected",
+        dedupKey: "nova-contract-divergence",
+        source: "contract-monitor",
+      });
+      const parsed = JSON.parse(body.value);
+      expect(parsed.payload.severity).toBe("critical");
+      expect(parsed.event_action).toBe("trigger");
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
+  });
+
+  it("routes auth-failure-spike as P2 error to PagerDuty", async () => {
+    const body = { value: "" };
+    mockHttpsSuccess(body);
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("auth-failure-spike", {
+        summary: "Auth failure rate spiking",
+        dedupKey: "nova-auth-spike",
+        source: "auth-service",
+      });
+      const parsed = JSON.parse(body.value);
+      expect(parsed.payload.severity).toBe("error");
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
+  });
+
+  it("routes disk-space-low as P3 warning to PagerDuty", async () => {
+    const body = { value: "" };
+    mockHttpsSuccess(body);
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("disk-space-low", {
+        summary: "Disk space below 15%",
+        dedupKey: "nova-disk-low",
+        source: "infra-monitor",
+      });
+      const parsed = JSON.parse(body.value);
+      expect(parsed.payload.severity).toBe("warning");
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatchAlert — dry-run mode
+// ---------------------------------------------------------------------------
+
+describe("dispatchAlert - dry-run mode", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    _resetRateLimiter();
+  });
+
+  it("returns resolved route without making an API call", async () => {
+    const requestSpy = vi.spyOn(https, "request");
+
+    const result = await dispatchAlert(
+      "auth-failure-spike",
+      {
+        summary: "Auth failures spiking",
+        dedupKey: "nova-auth-spike-dry",
+        source: "auth-service",
+      },
+      { dryRun: true, routingKey: ROUTING_KEY }
+    );
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      dryRun: true,
+      eventType: "auth-failure-spike",
+      priority: "P2",
+      severity: "error",
+    });
+  });
+
+  it("dry-run on a P1 event returns correct priority and policy", async () => {
+    const requestSpy = vi.spyOn(https, "request");
+
+    const result = await dispatchAlert(
+      "contract-divergence",
+      {
+        summary: "Diverged",
+        dedupKey: "nova-contract-divergence-dry",
+        source: "monitor",
+      },
+      { dryRun: true, routingKey: ROUTING_KEY }
+    );
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      dryRun: true,
+      priority: "P1",
+      severity: "critical",
+      escalationPolicyId: "EP-CRITICAL-001",
+    });
+  });
+
+  it("dry-run on a P3 event returns warning severity without API call", async () => {
+    const requestSpy = vi.spyOn(https, "request");
+
+    const result = await dispatchAlert(
+      "disk-space-low",
+      {
+        summary: "Low disk",
+        dedupKey: "nova-disk-low-dry",
+        source: "infra",
+      },
+      { dryRun: true }
+    );
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      dryRun: true,
+      priority: "P3",
+      severity: "warning",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatchAlert — P1 rate-limiter bypass
+// ---------------------------------------------------------------------------
+
+describe("dispatchAlert - P1 rate-limiter bypass", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    _resetRateLimiter();
+  });
+
+  it("P1 alerts send immediately even when the same dedupKey was just dispatched", async () => {
+    let callCount = 0;
+    vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+      callCount++;
+      const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+      const req = Object.assign(new EventEmitter(), {
+        write: vi.fn(),
+        end: vi.fn(() => {
+          if (callback) {
+            (callback as (res: any) => void)(res);
+            res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+            res.emit("end");
+          }
+        }),
+      });
+      return req as any;
+    });
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("contract-divergence", {
+        summary: "First divergence",
+        dedupKey: "nova-contract-divergence",
+        source: "monitor",
+      });
+      await dispatchAlert("contract-divergence", {
+        summary: "Second divergence",
+        dedupKey: "nova-contract-divergence",
+        source: "monitor",
+      });
+      expect(callCount).toBe(2);
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
+  });
+
+  it("P2 alerts with the same dedupKey are rate-limited after the first delivery", async () => {
+    let callCount = 0;
+    vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+      callCount++;
+      const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+      const req = Object.assign(new EventEmitter(), {
+        write: vi.fn(),
+        end: vi.fn(() => {
+          if (callback) {
+            (callback as (res: any) => void)(res);
+            res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+            res.emit("end");
+          }
+        }),
+      });
+      return req as any;
+    });
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("auth-failure-spike", {
+        summary: "First spike",
+        dedupKey: "nova-auth-spike",
+        source: "auth",
+      });
+      const second = await dispatchAlert("auth-failure-spike", {
+        summary: "Second spike",
+        dedupKey: "nova-auth-spike",
+        source: "auth",
+      });
+      expect(callCount).toBe(1);
+      expect(second).toMatchObject({ rateLimited: true, dedupKey: "nova-auth-spike" });
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
+  });
+
+  it("P3 alerts with the same dedupKey are rate-limited after the first delivery", async () => {
+    let callCount = 0;
+    vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+      callCount++;
+      const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+      const req = Object.assign(new EventEmitter(), {
+        write: vi.fn(),
+        end: vi.fn(() => {
+          if (callback) {
+            (callback as (res: any) => void)(res);
+            res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+            res.emit("end");
+          }
+        }),
+      });
+      return req as any;
+    });
+
+    const original = process.env.PAGERDUTY_ROUTING_KEY;
+    process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+    try {
+      await dispatchAlert("disk-space-low", {
+        summary: "Low disk first",
+        dedupKey: "nova-disk-low",
+        source: "infra",
+      });
+      const second = await dispatchAlert("disk-space-low", {
+        summary: "Low disk second",
+        dedupKey: "nova-disk-low",
+        source: "infra",
+      });
+      expect(callCount).toBe(1);
+      expect(second).toMatchObject({ rateLimited: true });
+    } finally {
+      process.env.PAGERDUTY_ROUTING_KEY = original;
+    }
   });
 });

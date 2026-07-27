@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     
     - name: Install Rust
       uses: actions-rs/toolchain@v1
@@ -29,19 +29,19 @@ jobs:
         override: true
     
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo build
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: contracts/target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
@@ -50,7 +50,29 @@ jobs:
       id: fuzz-tests
       working-directory: contracts/token-factory
       run: cargo test --release fuzz_ -- --nocapture
-    
+
+    - name: Run burn auction fuzz tests (60 s, legacy-tests feature)
+      id: burn-auction-fuzz
+      working-directory: contracts/token-factory
+      timeout-minutes: 2
+      env:
+        PROPTEST_CASES: "10000"
+      run: |
+        cargo test --release --features legacy-tests fuzz_burn_auction \
+          -- --nocapture 2>&1 | tee fuzz-burn-auction-results.txt
+        echo "## Burn Auction Fuzz Results" >> $GITHUB_STEP_SUMMARY
+        tail -20 fuzz-burn-auction-results.txt >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload burn auction fuzz corpus on failure
+      if: failure() && steps.burn-auction-fuzz.outcome == 'failure'
+      uses: actions/upload-artifact@v7
+      with:
+        name: burn-auction-fuzz-failure-${{ github.run_number }}
+        path: |
+          contracts/token-factory/fuzz-burn-auction-results.txt
+          contracts/token-factory/fuzz/corpus/burn_auction/
+        retention-days: 30
+
     - name: Run edge case tests
       id: edge-tests
       working-directory: contracts/token-factory
@@ -84,7 +106,7 @@ jobs:
     if: github.event_name == 'schedule'
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: actions-rs/toolchain@v1
@@ -94,19 +116,19 @@ jobs:
         override: true
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo build
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: contracts/target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}

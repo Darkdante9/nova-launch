@@ -1,11 +1,16 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::storage;
-use crate::types::{Error, PaginatedTokens, PaginationCursor, TokenInfo};
+use crate::types::{
+    Error, PaginatedStreamsResponse, PaginatedTokens, PaginationCursor, StreamCursor, TokenInfo,
+};
 
 const MAX_PAGE_SIZE: u32 = 100;
 const DEFAULT_PAGE_SIZE: u32 = 20;
 const NO_CURSOR: u32 = u32::MAX;
+
+/// Maximum number of streams returned per page by `list_streams_paginated`.
+const MAX_STREAM_PAGE_SIZE: u32 = 50;
 
 pub fn get_tokens_by_creator(
     env: &Env,
@@ -71,6 +76,85 @@ pub fn get_tokens_by_creator(
 
 pub fn get_creator_token_count(env: &Env, creator: &Address) -> u32 {
     storage::get_creator_token_count(env, creator)
+}
+
+/// Keyset (cursor-based) pagination over an owner's streams.
+///
+/// Unlike offset pagination — where inserting a new stream between two page
+/// fetches shifts every subsequent index and can cause callers to skip or
+/// duplicate rows — keyset pagination resumes strictly *after* the last
+/// `(created_ledger, stream_id)` pair the caller has already seen. Because
+/// streams are appended to the owner's index in creation order (and both
+/// `created_ledger` and `stream_id` are monotonically non-decreasing), the
+/// index is always sorted ascending and a linear scan from the cursor
+/// position is sufficient — no re-sorting is needed on read.
+///
+/// # Arguments
+/// * `env` - The contract environment
+/// * `owner` - The stream creator whose streams should be listed
+/// * `cursor` - `None` to start from the beginning; otherwise resume strictly
+///   after this `(created_ledger, stream_id)` position
+/// * `limit` - Maximum streams to return, clamped to `[1, 50]`
+///
+/// # Returns
+/// A `PaginatedStreamsResponse` containing the page of streams ordered by
+/// `(created_ledger, stream_id)` ascending, the cursor for the next page
+/// (`None` if this is the last page), and a `has_more` flag.
+pub fn list_streams_paginated(
+    env: &Env,
+    owner: &Address,
+    cursor: Option<StreamCursor>,
+    limit: u32,
+) -> PaginatedStreamsResponse {
+    let page_size = limit.clamp(1, MAX_STREAM_PAGE_SIZE);
+
+    let index = storage::get_creator_stream_index(env, owner);
+
+    // Find the first position strictly after the cursor. Since `index` is
+    // sorted ascending, a linear scan suffices and keeps the logic simple;
+    // owners with very large stream counts can later be optimized with a
+    // binary search over the same invariant without changing the API.
+    let start_pos: u32 = match cursor {
+        None => 0,
+        Some(after) => {
+            let mut pos = index.len();
+            for i in 0..index.len() {
+                let entry = index.get(i).unwrap();
+                if after.is_before(&entry) {
+                    pos = i;
+                    break;
+                }
+            }
+            pos
+        }
+    };
+
+    let mut streams = Vec::new(env);
+    let mut pos = start_pos;
+    let mut returned: u32 = 0;
+
+    while pos < index.len() && returned < page_size {
+        let entry = index.get(pos).unwrap();
+        if let Some(stream_info) = storage::get_stream(env, entry.stream_id) {
+            streams.push_back(stream_info);
+            returned += 1;
+        }
+        pos += 1;
+    }
+
+    let has_more = pos < index.len();
+    let next_cursor = if has_more {
+        // Cursor is the last returned entry's position, i.e. `pos - 1`.
+        Some(index.get(pos - 1).unwrap())
+    } else {
+        None
+    };
+
+    PaginatedStreamsResponse {
+        streams,
+        next_cursor,
+        has_more,
+    }
 }
 
 #[cfg(test)]

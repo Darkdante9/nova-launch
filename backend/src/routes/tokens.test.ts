@@ -84,6 +84,8 @@ describe("GET /api/tokens/search", () => {
       totalPages: 1,
       hasNext: false,
       hasPrev: false,
+      nextCursor: null,
+      hasMore: false,
     });
   });
 
@@ -95,9 +97,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-        }),
+        where: { AND: expect.arrayContaining([{ creator: TENANT_ID }]) },
       })
     );
   });
@@ -116,13 +116,17 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.data[0].name).toBe("Test Token");
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          OR: [
-            { name: { contains: "test", mode: "insensitive" } },
-            { symbol: { contains: "test", mode: "insensitive" } },
-          ],
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            {
+              OR: [
+                { name: { contains: "test", mode: "insensitive" } },
+                { symbol: { contains: "test", mode: "insensitive" } },
+              ],
+            },
+          ]),
+        },
       })
     );
   });
@@ -141,13 +145,17 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          createdAt: {
-            gte: new Date("2024-01-01T00:00:00.000Z"),
-            lte: new Date("2024-01-31T23:59:59.999Z"),
-          },
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            {
+              createdAt: {
+                gte: new Date("2024-01-01T00:00:00.000Z"),
+                lte: new Date("2024-01-31T23:59:59.999Z"),
+              },
+            },
+          ]),
+        },
       })
     );
   });
@@ -164,13 +172,17 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          totalSupply: {
-            gte: BigInt(100000),
-            lte: BigInt(600000),
-          },
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            {
+              totalSupply: {
+                gte: BigInt(100000),
+                lte: BigInt(600000),
+              },
+            },
+          ]),
+        },
       })
     );
   });
@@ -187,10 +199,12 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          burnCount: { gt: 0 },
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            { burnCount: { gt: 0 } },
+          ]),
+        },
       })
     );
   });
@@ -207,15 +221,17 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          burnCount: 0,
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            { burnCount: 0 },
+          ]),
+        },
       })
     );
   });
 
-  it("should sort by created date descending (default)", async () => {
+  it("should sort by created date descending (default), with id as tie-breaker", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
     vi.mocked(prisma.token.count).mockResolvedValue(2);
 
@@ -223,7 +239,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       })
     );
   });
@@ -238,7 +254,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { totalBurned: "asc" },
+        orderBy: [{ totalBurned: "asc" }],
       })
     );
   });
@@ -253,7 +269,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { totalSupply: "desc" },
+        orderBy: [{ totalSupply: "desc" }],
       })
     );
   });
@@ -268,12 +284,12 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { name: "asc" },
+        orderBy: [{ name: "asc" }],
       })
     );
   });
 
-  it("should handle pagination correctly", async () => {
+  it("should handle pagination correctly (deprecated page/offset flow)", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[1]]);
     vi.mocked(prisma.token.count).mockResolvedValue(50);
 
@@ -288,11 +304,13 @@ describe("GET /api/tokens/search", () => {
       totalPages: 5,
       hasNext: true,
       hasPrev: true,
+      nextCursor: null,
+      hasMore: false,
     });
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         skip: 10,
-        take: 10,
+        take: 11,
       })
     );
   });
@@ -305,9 +323,96 @@ describe("GET /api/tokens/search", () => {
 
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        take: 50,
+        take: 51,
       })
     );
+  });
+
+  it("should paginate by cursor on the created sort, returning a nextCursor when more results exist", async () => {
+    // Service returns limit+1 rows so the route can detect hasMore.
+    vi.mocked(prisma.token.findMany).mockResolvedValue([
+      mockTokens[0],
+      mockTokens[1],
+    ]);
+    vi.mocked(prisma.token.count).mockResolvedValue(5);
+
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?limit=1")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+    expect(response.body.pagination.hasMore).toBe(true);
+    expect(typeof response.body.pagination.nextCursor).toBe("string");
+
+    const decoded = JSON.parse(
+      Buffer.from(response.body.pagination.nextCursor, "base64").toString(
+        "utf-8"
+      )
+    );
+    expect(decoded).toEqual({
+      createdAt: mockTokens[0].createdAt.toISOString(),
+      id: mockTokens[0].id,
+    });
+  });
+
+  it("should apply the keyset WHERE condition when a cursor is supplied", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue([mockTokens[1]]);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    const cursor = Buffer.from(
+      JSON.stringify({ createdAt: "2024-01-01T00:00:00.000Z", id: "1" })
+    ).toString("base64");
+
+    const response = await withTenant(
+      request(app).get(`/api/tokens/search?cursor=${cursor}`)
+    );
+
+    expect(response.status).toBe(200);
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            {
+              OR: [
+                { createdAt: { lt: new Date("2024-01-01T00:00:00.000Z") } },
+                {
+                  createdAt: new Date("2024-01-01T00:00:00.000Z"),
+                  id: { gt: "1" },
+                },
+              ],
+            },
+          ]),
+        },
+      })
+    );
+    // Cursor mode bypasses `skip` entirely.
+    expect(prisma.token.findMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ skip: expect.anything() })
+    );
+  });
+
+  it("should reject a cursor combined with a non-created sortBy", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({ createdAt: "2024-01-01T00:00:00.000Z", id: "1" })
+    ).toString("base64");
+
+    const response = await withTenant(
+      request(app).get(`/api/tokens/search?cursor=${cursor}&sortBy=name`)
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+  });
+
+  it("should reject a malformed cursor", async () => {
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?cursor=not-valid-base64-json")
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
   });
 
   it("should convert BigInt to string in response", async () => {
@@ -364,14 +469,14 @@ describe("GET /api/tokens/search", () => {
     expect(response.body.success).toBe(true);
     expect(prisma.token.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          creator: TENANT_ID,
-          OR: expect.any(Array),
-          burnCount: { gt: 0 },
-          totalSupply: expect.objectContaining({
-            gte: BigInt(100000),
-          }),
-        }),
+        where: {
+          AND: expect.arrayContaining([
+            { creator: TENANT_ID },
+            { OR: expect.any(Array) },
+            { burnCount: { gt: 0 } },
+            { totalSupply: expect.objectContaining({ gte: BigInt(100000) }) },
+          ]),
+        },
       })
     );
   });
@@ -408,6 +513,7 @@ describe("GET /api/tokens/search", () => {
       hasBurns: undefined,
       sortBy: "burned",
       sortOrder: "desc",
+      cursor: undefined,
     });
   });
 

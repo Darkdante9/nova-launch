@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BurnStatistics } from '../BurnStatistics';
 import { StatCard } from '../StatCard';
 import { BurnHistoryTable } from '../BurnHistoryTable';
 import { BurnChart } from '../BurnChart';
+import { CrossTokenSummaryTab } from '../CrossTokenSummaryTab';
 import {
   formatDate,
   truncateAddress,
@@ -11,6 +12,7 @@ import {
   getExplorerUrl,
   calculatePercentBurned,
   aggregateBurnData,
+  exportToCsv,
 } from '../utils';
 import type { BurnRecord } from '../../../types';
 
@@ -405,5 +407,183 @@ describe('Utility Functions', () => {
         );
       }
     });
+  });
+
+  describe('exportToCsv', () => {
+    let createObjectURLMock: ReturnType<typeof vi.fn>;
+    let revokeObjectURLMock: ReturnType<typeof vi.fn>;
+    let appendChildSpy: ReturnType<typeof vi.spyOn>;
+    let removeChildSpy: ReturnType<typeof vi.spyOn>;
+    let clickSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      createObjectURLMock = vi.fn(() => 'blob:http://localhost/mock-url');
+      revokeObjectURLMock = vi.fn();
+      clickSpy = vi.fn();
+
+      Object.defineProperty(globalThis, 'URL', {
+        value: { createObjectURL: createObjectURLMock, revokeObjectURL: revokeObjectURLMock },
+        configurable: true,
+      });
+
+      appendChildSpy = vi.spyOn(document.body, 'appendChild').mockImplementation((el) => {
+        if (el instanceof HTMLAnchorElement) {
+          el.click = clickSpy;
+        }
+        return el;
+      });
+      removeChildSpy = vi.spyOn(document.body, 'removeChild').mockImplementation((el) => el);
+    });
+
+    afterEach(() => {
+      appendChildSpy.mockRestore();
+      removeChildSpy.mockRestore();
+    });
+
+    it('triggers a download with correct filename', () => {
+      const rows = [{ name: 'Alice', amount: '1000' }];
+      exportToCsv(rows, 'test-export', [
+        { key: 'name', label: 'Name' },
+        { key: 'amount', label: 'Amount' },
+      ]);
+
+      expect(appendChildSpy).toHaveBeenCalled();
+      expect(clickSpy).toHaveBeenCalled();
+      expect(revokeObjectURLMock).toHaveBeenCalled();
+    });
+
+    it('creates a Blob with CSV content including header row', () => {
+      let capturedBlob: Blob | undefined;
+      createObjectURLMock.mockImplementation((blob: Blob) => {
+        capturedBlob = blob;
+        return 'blob:http://localhost/mock';
+      });
+
+      const rows = [
+        { wallet: 'GABC', burned: '5000' },
+        { wallet: 'GXYZ', burned: '3000' },
+      ];
+      exportToCsv(rows, 'burners', [
+        { key: 'wallet', label: 'Wallet' },
+        { key: 'burned', label: 'Burned' },
+      ]);
+
+      expect(capturedBlob).toBeDefined();
+      return capturedBlob!.text().then((text) => {
+        expect(text).toContain('"Wallet"');
+        expect(text).toContain('"Burned"');
+        expect(text).toContain('"GABC"');
+        expect(text).toContain('"5000"');
+      });
+    });
+
+    it('handles null/undefined values gracefully', () => {
+      let capturedBlob: Blob | undefined;
+      createObjectURLMock.mockImplementation((blob: Blob) => {
+        capturedBlob = blob;
+        return 'blob:http://localhost/mock';
+      });
+
+      const rows = [{ a: null, b: undefined } as unknown as Record<string, unknown>];
+      exportToCsv(rows, 'test', [
+        { key: 'a' as never, label: 'A' },
+        { key: 'b' as never, label: 'B' },
+      ]);
+
+      return capturedBlob!.text().then((text) => {
+        // Null/undefined values become empty strings in each column
+        expect(text).toContain('"A"');
+        expect(text).toContain('"B"');
+      });
+    });
+  });
+});
+
+describe('CrossTokenSummaryTab', () => {
+  it('shows loading state initially', () => {
+    render(<CrossTokenSummaryTab />);
+    expect(screen.getByTestId('cross-token-loading')).toBeInTheDocument();
+  });
+
+  it('renders aggregate stat cards after loading', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('cross-token-summary')).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
+
+    expect(screen.getByText('Total Burned (All Tokens)')).toBeInTheDocument();
+    expect(screen.getByText('Total Burns')).toBeInTheDocument();
+    expect(screen.getByText('Tokens Tracked')).toBeInTheDocument();
+    expect(screen.getByText('Unique Burners')).toBeInTheDocument();
+  });
+
+  it('renders the burn rate trend section', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(() => screen.getByTestId('cross-token-summary'), { timeout: 5000 });
+    expect(screen.getByText('Burn Rate Trend (7-Day Rolling)')).toBeInTheDocument();
+  });
+
+  it('renders top 5 burners table', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(() => screen.getByTestId('cross-token-summary'), { timeout: 5000 });
+    expect(screen.getByText('Top 5 Burners by Wallet')).toBeInTheDocument();
+  });
+
+  it('renders per-token summary table', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(() => screen.getByTestId('cross-token-summary'), { timeout: 5000 });
+    expect(screen.getByTestId('token-summaries-table')).toBeInTheDocument();
+    expect(screen.getByText('Per-Token Burn Summary')).toBeInTheDocument();
+  });
+
+  it('shows export CSV buttons', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(() => screen.getByTestId('cross-token-summary'), { timeout: 5000 });
+    expect(screen.getByTestId('export-top-burners-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('export-token-summaries-btn')).toBeInTheDocument();
+  });
+
+  it('renders date range filter inputs', async () => {
+    render(<CrossTokenSummaryTab />);
+    await waitFor(() => screen.getByTestId('cross-token-summary'), { timeout: 5000 });
+    expect(screen.getByTestId('start-date-input')).toBeInTheDocument();
+    expect(screen.getByTestId('end-date-input')).toBeInTheDocument();
+  });
+});
+
+describe('BurnStatistics tab navigation', () => {
+  it('shows tab buttons after loading', async () => {
+    render(<BurnStatistics tokenAddress="test-token" />);
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('tab-single-token')).toBeInTheDocument();
+        expect(screen.getByTestId('tab-cross-token')).toBeInTheDocument();
+      },
+      { timeout: 3000 }
+    );
+  });
+
+  it('switches to cross-token summary tab on click', async () => {
+    render(<BurnStatistics tokenAddress="test-token" />);
+    await waitFor(() => screen.getByTestId('tab-cross-token'), { timeout: 3000 });
+
+    fireEvent.click(screen.getByTestId('tab-cross-token'));
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('cross-token-loading')).toBeInTheDocument();
+      },
+      { timeout: 1000 }
+    );
+  });
+
+  it('defaults to single-token tab showing burn stats', async () => {
+    render(<BurnStatistics tokenAddress="test-token" />);
+    await waitFor(() => screen.getByText('Total Burned'), { timeout: 3000 });
+    expect(screen.getByText('Total Burned')).toBeInTheDocument();
+    expect(screen.getByText('Burn Progress')).toBeInTheDocument();
   });
 });

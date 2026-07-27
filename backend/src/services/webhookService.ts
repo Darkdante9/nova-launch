@@ -9,19 +9,31 @@ import {
   WebhookDeliveryLog,
 } from "../types/webhook";
 import { generateWebhookSecret, generateWebhookSignature } from "../utils/crypto";
+import { globMatch, isValidGlobPattern } from "../utils/globMatch";
 
 export class WebhookService {
   /**
-   * Create a new webhook subscription
+   * Create a new webhook subscription.
+   *
+   * Each entry in `input.events` may be either a concrete WebhookEventType value
+   * or a glob pattern (e.g. `token.*`, `governance.proposal.**`).  Glob patterns
+   * are validated at creation time — an invalid pattern causes the method to throw.
    */
   async createSubscription(
     input: CreateWebhookInput
   ): Promise<WebhookSubscription> {
+    // Validate any glob patterns supplied in the events array.
+    for (const event of input.events) {
+      if (event.includes("*") && !isValidGlobPattern(event)) {
+        throw new Error(`Invalid glob pattern in events: "${event}"`);
+      }
+    }
+
     const id = uuidv4();
     const secret = generateWebhookSecret();
 
     const query = `
-      INSERT INTO webhook_subscriptions 
+      INSERT INTO webhook_subscriptions
         (id, url, token_address, events, secret, created_by)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
@@ -107,21 +119,41 @@ export class WebhookService {
   }
 
   /**
-   * Find subscriptions matching an event
+   * Find subscriptions matching an event.
+   *
+   * A subscription matches when:
+   *  1. It is active.
+   *  2. Its token_address is NULL (wildcard) or equals the supplied tokenAddress.
+   *  3. At least one of its events entries either:
+   *       a. Exactly equals the incoming event type, OR
+   *       b. Is a glob pattern that matches the incoming event type string.
    */
   async findMatchingSubscriptions(
     event: WebhookEventType,
-    tokenAddress?: string
+    tokenAddress?: string | null
   ): Promise<WebhookSubscription[]> {
+    // Fetch all active subscriptions filtered by token address at the DB level.
+    // Event matching (including glob patterns) is done in-process so we can use
+    // the hand-rolled glob engine without relying on a Postgres extension.
     const query = `
-      SELECT * FROM webhook_subscriptions 
-      WHERE active = true 
-        AND $1 = ANY(events)
-        AND (token_address IS NULL OR token_address = $2)
+      SELECT * FROM webhook_subscriptions
+      WHERE active = true
+        AND (token_address IS NULL OR token_address = $1)
     `;
 
-    const result = await db.query(query, [event, tokenAddress || null]);
-    return result.rows.map(this.mapRowToSubscription);
+    const result = await db.query(query, [tokenAddress ?? null]);
+    const subscriptions: WebhookSubscription[] = result.rows.map(
+      this.mapRowToSubscription
+    );
+
+    // Filter by event type — supports exact matches and glob patterns.
+    return subscriptions.filter((sub) =>
+      sub.events.some((pattern) => {
+        if (pattern === event) return true;
+        if (pattern.includes("*")) return globMatch(pattern, event);
+        return false;
+      })
+    );
   }
 
   /**
@@ -182,6 +214,20 @@ export class WebhookService {
 
     const result = await db.query(query, [subscriptionId, limit]);
     return result.rows.map(this.mapRowToDeliveryLog);
+  }
+
+  /**
+   * Get a single delivery log by its own ID
+   */
+  async getDeliveryLogById(id: string): Promise<WebhookDeliveryLog | null> {
+    const query = "SELECT * FROM webhook_delivery_logs WHERE id = $1";
+    const result = await db.query(query, [id]);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapRowToDeliveryLog(result.rows[0]);
   }
 
   /**

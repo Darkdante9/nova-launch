@@ -8,21 +8,27 @@ datasource db {
 }
 
 model Token {
-  id            String   @id @default(uuid())
-  address       String   @unique
+  id            String        @id @default(uuid())
+  address       String        @unique
   creator       String
   name          String
   symbol        String
-  decimals      Int      @default(18)
+  decimals      Int           @default(18)
   totalSupply   BigInt
   initialSupply BigInt
   /// Defaults preserve replay/upgrade compatibility for legacy tokens that predate burn tracking.
-  totalBurned   BigInt   @default(0)
-  burnCount     Int      @default(0)
+  totalBurned   BigInt        @default(0)
+  burnCount     Int           @default(0)
   /// Remains nullable so migrated historical rows do not require synthetic metadata backfills.
   metadataUri   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  /// When false the token is hidden from the public discovery endpoint.
+  isPublic      Boolean       @default(true)
+  /// Organisational category for marketplace filtering.
+  category      TokenCategory @default(OTHER)
+  /// Stellar network this token was deployed on.
+  network       String        @default("testnet")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   burnRecords    BurnRecord[]
   analytics      Analytics[]
@@ -36,6 +42,17 @@ model Token {
   @@index([burnCount])
   @@index([name])
   @@index([symbol])
+  @@index([isPublic, createdAt])
+  @@index([category])
+  @@index([network])
+}
+
+enum TokenCategory {
+  DEFI
+  COMMUNITY
+  CREATOR
+  UTILITY
+  OTHER
 }
 
 model BurnRecord {
@@ -59,6 +76,7 @@ model BurnRecord {
 
 model BuybackCampaign {
   id             Int            @id @default(autoincrement())
+  tenantId       String?
   tokenAddress   String
   totalAmount    String
   executedAmount String         @default("0")
@@ -73,6 +91,7 @@ model BuybackCampaign {
   @@index([status])
   @@index([tokenAddress])
   @@index([createdAt])
+  @@index([tenantId])
 }
 
 model BuybackStep {
@@ -125,6 +144,7 @@ model Analytics {
 /// A dividend pool funded by a token creator/admin for distribution to holders.
 model DividendPool {
   id             String             @id @default(uuid())
+  tenantId       String?
   tokenId        String
   /// Stellar address of the account that funded this pool
   fundedBy       String
@@ -151,6 +171,7 @@ model DividendPool {
   @@index([fundedBy])
   @@index([status])
   @@index([createdAt])
+  @@index([tenantId])
 }
 
 enum DividendPoolStatus {
@@ -198,11 +219,13 @@ model DividendClaim {
 
 model WebhookSubscription {
   id          String   @id @default(uuid())
+  tenantId    String?
   userAddress String
   endpoint    String   @unique
   createdAt   DateTime @default(now())
 
   @@index([userAddress])
+  @@index([tenantId])
 }
 
 model Stream {
@@ -403,4 +426,25 @@ model IntegrationState {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/// Tracks pin status for content stored on IPFS via Pinata (#1403).
+/// Populated/updated by the pin monitor and the admin re-pin endpoint so the
+/// admin dashboard has durable visibility into pin health without re-querying
+/// Pinata for every request.
+model IPFSPin {
+  id            String    @id @default(uuid())
+  cid           String    @unique
+  tokenName     String?
+  tokenAddress  String?
+  pinned        Boolean   @default(false)
+  failureCount  Int       @default(0)
+  lastChecked   DateTime?
+  error         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([pinned])
+  @@index([failureCount])
+  @@index([tokenAddress])
 }

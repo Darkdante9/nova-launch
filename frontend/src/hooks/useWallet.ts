@@ -10,6 +10,7 @@ import {
 } from '../services/walletKit';
 import { WalletService } from '../services/wallet';
 import type { WalletState, WalletType } from '../types';
+import { authSyncService } from '../services/authSync.service';
 
 export const WALLET_CONNECTED_KEY = 'nova_wallet_connected';
 export const WALLET_STATE_KEY = 'nova_wallet_state';
@@ -81,6 +82,9 @@ export const useWallet = (options: UseWalletOptions = {}) => {
         }));
         setError(null);
         clearWalletState();
+
+        // Invalidate server-side JWT session (#1371)
+        void authSyncService.onDisconnect();
 
         try {
             analytics.track(AnalyticsEvent.WALLET_DISCONNECTED);

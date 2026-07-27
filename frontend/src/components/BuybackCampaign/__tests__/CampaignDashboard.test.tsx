@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { CampaignDashboard } from '../CampaignDashboard';
+import * as useStellarHook from '../../../hooks/useStellar';
+import * as useWalletHook from '../../../hooks/useWallet';
+import * as useCampaignStepSubscriptionHook from '../../../hooks/useCampaignStepSubscription';
+import type { CampaignStepExecutedEvent } from '../../../hooks/useCampaignStepSubscription';
 
 global.fetch = vi.fn();
+
+vi.mock('../../../hooks/useStellar');
+vi.mock('../../../hooks/useWallet');
+vi.mock('../../../hooks/useCampaignStepSubscription');
 
 describe('CampaignDashboard Integration Tests', () => {
   const mockCampaign = {
@@ -52,8 +60,28 @@ describe('CampaignDashboard Integration Tests', () => {
     ],
   };
 
+  /** Captured on each render so tests can simulate a delivered subscription event. */
+  let onStepExecuted: (event: CampaignStepExecutedEvent) => void = () => {};
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useStellarHook.useStellar).mockReturnValue({
+      executeBuybackStep: vi.fn(),
+      getCampaign: vi.fn(),
+    });
+    vi.mocked(useWalletHook.useWallet).mockReturnValue({
+      wallet: { address: 'GTEST123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', isConnected: true },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      isConnecting: false,
+      error: null,
+    });
+    vi.mocked(useCampaignStepSubscriptionHook.useCampaignStepSubscription).mockImplementation(
+      (options) => {
+        onStepExecuted = options.onStepExecuted;
+        return { connected: true };
+      }
+    );
   });
 
   it('should fetch and display campaign data', async () => {
@@ -178,5 +206,65 @@ describe('CampaignDashboard Integration Tests', () => {
     });
 
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an ETA for the next step once two steps have executed', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockCampaign,
+    } as Response);
+
+    render(<CampaignDashboard campaignId={1} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/est\. next step in/i)).toBeInTheDocument();
+    });
+  });
+
+  it('highlights the completed step and refetches immediately when a step-executed event arrives', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockCampaign,
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...mockCampaign,
+          currentStep: 3,
+          executedAmount: '7000',
+          steps: mockCampaign.steps.map((step) =>
+            step.stepNumber === 2
+              ? { ...step, status: 'COMPLETED' as const, executedAt: '2026-03-09T11:30:00Z', txHash: 'hash3' }
+              : step
+          ),
+        }),
+      } as Response);
+
+    render(<CampaignDashboard campaignId={1} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('2 / 5 steps')).toBeInTheDocument();
+    });
+
+    onStepExecuted({
+      campaignId: 1,
+      stepNumber: 2,
+      amount: '2000',
+      status: 'COMPLETED',
+      txHash: 'hash3',
+      executedAt: '2026-03-09T11:30:00Z',
+      totalSteps: 5,
+      executedAmount: '7000',
+      campaignStatus: 'ACTIVE',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('step-2')).toHaveClass('animate-pulse');
+    });
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
   });
 });

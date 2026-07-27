@@ -53,7 +53,9 @@ export const SUBSCRIPTION_TOPICS = {
   tokenDeployed: "token.deployed",
   burnExecuted: "burn.executed",
   proposalStatusChanged: "governance.proposal.statusChanged",
+  proposalVoteCast: "governance.proposal.voteCast",
   vaultMatured: "vault.matured",
+  campaignStepExecuted: "campaign.step_executed",
 } as const;
 
 /**
@@ -100,12 +102,40 @@ export interface ProposalStatusChangedPayload extends TenantScopedPayload {
   timestamp: string;
 }
 
+export interface ProposalVoteCastPayload extends TenantScopedPayload {
+  proposalId: number;
+  tokenAddress: string;
+  voter: string;
+  support: boolean;
+  weight: string | bigint;
+  votesFor: string | bigint;
+  votesAgainst: string | bigint;
+  reason?: string | null;
+  txHash: string;
+  timestamp: string;
+}
+
 export interface VaultMaturedPayload extends TenantScopedPayload {
   vaultId: number;
   recipientAddress: string;
   amount: string | bigint;
   txHash: string;
   timestamp: string;
+}
+
+/** Buyback campaigns have no creator/tenant field — they're keyed by
+ *  tokenAddress, not by a tenant-owned creator — so this payload is
+ *  intentionally not `TenantScopedPayload`. */
+export interface CampaignStepExecutedPayload {
+  campaignId: number;
+  stepNumber: number;
+  amount: string | bigint;
+  status: string;
+  txHash: string;
+  executedAt: string;
+  totalSteps: number;
+  executedAmount: string | bigint;
+  campaignStatus: string;
 }
 
 /**
@@ -284,6 +314,25 @@ export const resolvers = {
       return bigintToString(rows);
     },
 
+    /**
+     * Current FIFO execution queue: queued proposals ordered by queue time.
+     *
+     * Proposals of the same `proposalType` execute in the order they were
+     * queued (FIFO); different types are independent. The returned list is
+     * ordered by `createdAt` ascending so the array index is the execution
+     * position within each type. Optionally narrowed to one `proposalType`.
+     */
+    async governanceQueue(_: unknown, args: { proposalType?: string }) {
+      const where: Record<string, unknown> = { status: "QUEUED" };
+      if (args.proposalType) where.proposalType = args.proposalType;
+
+      const rows = await prisma.proposal.findMany({
+        where,
+        orderBy: { createdAt: "asc" },
+      });
+      return bigintToString(rows);
+    },
+
     // ── Campaign ─────────────────────────────────────────────────────────────
 
     /** Fetch a single campaign by its on-chain campaignId. */
@@ -375,6 +424,21 @@ export const resolvers = {
         bigintToString(payload),
     },
 
+    proposalVoteCast: {
+      subscribe: (
+        _root: unknown,
+        args: { proposalId?: number | null },
+        ctx: SubscriptionContext
+      ) =>
+        eventBusAsyncIterator<ProposalVoteCastPayload>(
+          SUBSCRIPTION_TOPICS.proposalVoteCast,
+          (p) =>
+            tenantOwnsEvent(ctx, p) &&
+            (args.proposalId == null || p.proposalId === args.proposalId)
+        ),
+      resolve: (payload: ProposalVoteCastPayload) => bigintToString(payload),
+    },
+
     vaultMatured: {
       subscribe: (
         _root: unknown,
@@ -389,6 +453,20 @@ export const resolvers = {
               p.recipientAddress === args.recipientAddress)
         ),
       resolve: (payload: VaultMaturedPayload) => bigintToString(payload),
+    },
+
+    campaignStepExecuted: {
+      subscribe: (
+        _root: unknown,
+        args: { campaignId?: number | null },
+        _ctx: SubscriptionContext
+      ) =>
+        eventBusAsyncIterator<CampaignStepExecutedPayload>(
+          SUBSCRIPTION_TOPICS.campaignStepExecuted,
+          (p) => !args.campaignId || p.campaignId === args.campaignId
+        ),
+      resolve: (payload: CampaignStepExecutedPayload) =>
+        bigintToString(payload),
     },
   },
 
@@ -421,6 +499,28 @@ export const resolvers = {
         ...paginate(args),
       });
       return bigintToString(rows);
+    },
+
+    /**
+     * 0-based position of this proposal in the FIFO execution queue for its
+     * type. Computed as the number of QUEUED proposals of the same
+     * `proposalType` queued before it. Returns null unless the proposal is
+     * itself QUEUED.
+     */
+    async queuePosition(parent: {
+      status: string;
+      proposalType: string;
+      createdAt: Date | string;
+    }) {
+      if (parent.status !== "QUEUED") return null;
+      const ahead = await prisma.proposal.count({
+        where: {
+          status: "QUEUED",
+          proposalType: parent.proposalType as any,
+          createdAt: { lt: new Date(parent.createdAt) },
+        },
+      });
+      return ahead;
     },
   },
 };

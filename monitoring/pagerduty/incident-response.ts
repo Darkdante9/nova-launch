@@ -12,6 +12,130 @@ import https from "https";
 /** Severity levels mapped to PagerDuty event severities */
 export type IncidentSeverity = "critical" | "error" | "warning" | "info";
 
+/** Internal priority tiers used for escalation and rate-limiting decisions */
+export type Priority = "P1" | "P2" | "P3";
+
+/** Known event types that can be routed through SEVERITY_ROUTING */
+export type EventType =
+  | "contract-divergence"
+  | "auth-failure-spike"
+  | "db-connection-loss"
+  | "event-listener-down"
+  | "api-error-rate-high"
+  | "disk-space-low";
+
+export interface SeverityRoute {
+  priority: Priority;
+  severity: IncidentSeverity;
+  escalationPolicyId: string;
+}
+
+/** Maps each event type to its priority tier, PagerDuty severity, and escalation policy */
+export const SEVERITY_ROUTING: Record<EventType, SeverityRoute> = {
+  "contract-divergence": {
+    priority: "P1",
+    severity: "critical",
+    escalationPolicyId: "EP-CRITICAL-001",
+  },
+  "auth-failure-spike": {
+    priority: "P2",
+    severity: "error",
+    escalationPolicyId: "EP-SECURITY-002",
+  },
+  "db-connection-loss": {
+    priority: "P1",
+    severity: "critical",
+    escalationPolicyId: "EP-CRITICAL-001",
+  },
+  "event-listener-down": {
+    priority: "P1",
+    severity: "critical",
+    escalationPolicyId: "EP-CRITICAL-001",
+  },
+  "api-error-rate-high": {
+    priority: "P2",
+    severity: "error",
+    escalationPolicyId: "EP-BACKEND-002",
+  },
+  "disk-space-low": {
+    priority: "P3",
+    severity: "warning",
+    escalationPolicyId: "EP-INFRA-003",
+  },
+};
+
+export interface DryRunResult {
+  dryRun: true;
+  eventType: EventType;
+  priority: Priority;
+  severity: IncidentSeverity;
+  escalationPolicyId: string;
+}
+
+export interface RateLimitedResult {
+  rateLimited: true;
+  dedupKey: string;
+  nextAllowedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Rate limiter — P1 always bypasses; P2/P3 are subject to a per-key cooldown
+// ---------------------------------------------------------------------------
+
+const _sentAt = new Map<string, number>();
+const RATE_LIMIT_MS = 60_000;
+
+/** Clears rate-limiter state. Intended for use in tests only. */
+export function _resetRateLimiter(): void {
+  _sentAt.clear();
+}
+
+/**
+ * Dispatches an alert through the SEVERITY_ROUTING map.
+ * - Dry-run mode returns the resolved route without making an API call.
+ * - P1 alerts bypass the rate limiter for immediate delivery.
+ * - P2/P3 alerts that share a dedupKey with a recent send return RateLimitedResult.
+ */
+export async function dispatchAlert(
+  eventType: EventType,
+  payload: Omit<IncidentPayload, "severity">,
+  options: {
+    dryRun?: boolean;
+    routingKey?: string;
+  } = {}
+): Promise<PagerDutyResponse | DryRunResult | RateLimitedResult> {
+  const route = SEVERITY_ROUTING[eventType];
+
+  if (options.dryRun) {
+    return {
+      dryRun: true,
+      eventType,
+      priority: route.priority,
+      severity: route.severity,
+      escalationPolicyId: route.escalationPolicyId,
+    };
+  }
+
+  if (route.priority !== "P1") {
+    const last = _sentAt.get(payload.dedupKey);
+    if (last !== undefined && Date.now() - last < RATE_LIMIT_MS) {
+      return {
+        rateLimited: true,
+        dedupKey: payload.dedupKey,
+        nextAllowedAt: last + RATE_LIMIT_MS,
+      };
+    }
+  }
+
+  const result = await triggerIncident(
+    { ...payload, severity: route.severity },
+    options.routingKey
+  );
+
+  _sentAt.set(payload.dedupKey, Date.now());
+  return result;
+}
+
 export interface IncidentPayload {
   /** Short human-readable summary (max 1024 chars) */
   summary: string;
@@ -196,4 +320,32 @@ export function resolveEventListenerDown() {
 /** Resolve the API error rate incident once it recovers */
 export function resolveHighApiErrorRate() {
   return resolveIncident("nova-api-high-error-rate");
+}
+
+export interface StreamDivergenceDetails {
+  streamId: number;
+  field: string;
+  onChainValue: string;
+  projectedValue: string;
+}
+
+/** Build the dedup key for a stream divergence so it can be resolved later */
+function streamDivergenceDedupKey(streamId: number, field: string): string {
+  return `nova-stream-divergence-${streamId}-${field}`;
+}
+
+/** Alert (P2) when stream reconciliation finds the projection diverging from on-chain state */
+export function alertStreamDivergence(details: StreamDivergenceDetails) {
+  return triggerIncident({
+    summary: `Nova Launch: Stream ${details.streamId} ${details.field} diverged from on-chain state`,
+    severity: "error",
+    dedupKey: streamDivergenceDedupKey(details.streamId, details.field),
+    source: "streamReconciliation",
+    customDetails: details,
+  });
+}
+
+/** Resolve a stream divergence incident once reconciliation confirms it cleared */
+export function resolveStreamDivergence(streamId: number, field: string) {
+  return resolveIncident(streamDivergenceDedupKey(streamId, field));
 }

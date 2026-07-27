@@ -1,4 +1,5 @@
 import axios from "axios";
+import { Gauge } from "prom-client";
 import { validateEnv } from "../config/env";
 import { WebhookEventType } from "../types/webhook";
 import webhookDeliveryService from "./webhookDeliveryService";
@@ -6,7 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { GovernanceEventParser } from "./governanceEventParser";
 import governanceEventMapper from "./governanceEventMapper";
 import { TokenEventParser, RawTokenEvent } from "./tokenEventParser";
-import { EventCursorStore } from "./eventCursorStore";
+import { EventCursorStore, parseLedgerFromCursor } from "./eventCursorStore";
 import { StreamEventParser } from "./streamEventParser";
 import { parseVaultCreatedEvent, parseVaultClaimedEvent, parseVaultCancelledEvent, parseVaultMetadataUpdatedEvent } from "./vaultEventParser";
 import { decodeEvent, kindForTopic } from "./eventVersioning/decoderRegistry";
@@ -16,6 +17,7 @@ import {
 } from "../stellar-service-integration/rate-limiter";
 import { ListenerBackoffState, LISTENER_RECONNECT_CONFIG } from "./listenerBackoff";
 import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
+import { OutboundHttpClient } from "../lib/outboundHttpClient";
 import {
   PROJECTION_LAG_THRESHOLDS,
   determineThresholdStatus,
@@ -31,17 +33,49 @@ const FACTORY_CONTRACT_ID = _env.FACTORY_CONTRACT_ID;
 
 const POLL_INTERVAL_MS = 5000;
 
+/**
+ * Maximum number of ledgers the cursor may lag before a full catchup is
+ * triggered on reconnect. Configurable via MAX_CATCHUP_LEDGERS env var.
+ */
+export const MAX_CATCHUP_LEDGERS =
+  parseInt(process.env.MAX_CATCHUP_LEDGERS ?? "1000", 10);
+
+/** Prometheus gauge: how many ledgers behind the live ledger the cursor is. */
+const cursorLagGauge = new Gauge({
+  name: "listener_cursor_lag",
+  help: "Number of ledgers the Stellar event listener cursor is behind the live ledger.",
+  registers: [register],
+});
+
 const LAG_WINDOW_SIZE_MS = 60000;
 const globalLagWindow = new LagWindow(LAG_WINDOW_SIZE_MS);
 const eventKindLagWindows = new Map<string, LagWindow>();
 
 export interface HorizonTransport {
   getEvents(url: string, params: any): Promise<{ data: { _embedded?: { records: StellarEvent[] } } }>;
+  /** Fetch the latest ledger sequence from Horizon. May return null on error. */
+  getCurrentLedger?(url: string): Promise<number | null>;
 }
+
+// Per-call retry (3 attempts, jittered backoff, skips 4xx) and circuit
+// breaker protection for the real Horizon HTTP transport. This is a
+// separate, faster-reacting layer underneath `pollEvents()`'s own
+// poll-loop-level backoff — it fails fast within a single poll iteration
+// instead of always waiting for the outer loop to back off.
+const horizonClient = new OutboundHttpClient({ serviceName: "horizon" });
 
 export class DefaultHorizonTransport implements HorizonTransport {
   async getEvents(url: string, params: any): Promise<any> {
-    return axios.get(url, { params, timeout: 30000 });
+    return horizonClient.execute(() => axios.get(url, { params, timeout: 30000 }));
+  }
+
+  async getCurrentLedger(horizonUrl: string): Promise<number | null> {
+    try {
+      const res = await axios.get(horizonUrl, { timeout: 10000 });
+      return res.data?.core_latest_ledger ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -112,6 +146,9 @@ export class StellarEventListener {
     this.lastCursor = await this.cursorStore.load();
     console.log(`Resuming from cursor: ${this.lastCursor ?? "origin"}`);
 
+    // If cursor is too far behind the live ledger, drop it and do a full catchup
+    await this.applyCatchupPolicyIfNeeded();
+
     this.isRunning = true;
     console.log("Starting Stellar event listener...");
 
@@ -151,6 +188,13 @@ export class StellarEventListener {
 
         if (isTransient) {
           const { delayMs, attempt } = backoff.recordFailure();
+
+          if (attempt > LISTENER_RECONNECT_CONFIG.maxRetries) {
+            console.error(
+              `[StellarEventListener] ${attempt} consecutive failures — max retries exhausted. Surfacing terminal error.`,
+            );
+            throw new Error(`Max retries exhausted after ${attempt} attempts`);
+          }
 
           if (attempt > 5) {
             console.error(
@@ -198,6 +242,7 @@ export class StellarEventListener {
         await this.processEvent(event);
         this.lastCursor = event.paging_token;
         await this.cursorStore.save(this.lastCursor);
+        this.emitCursorLagMetric(event.ledger);
       }
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -667,6 +712,49 @@ export class StellarEventListener {
    */
   getRecentLagMetrics(count: number = 10): ProjectionLagMetrics[] {
     return this.recentLagMetrics.slice(-count);
+  }
+
+  /**
+   * If the persisted cursor is older than MAX_CATCHUP_LEDGERS behind the live
+   * ledger, reset it to null so we start a full catchup from the current tip.
+   * The lag is also reported to the cursor_lag Prometheus gauge.
+   */
+  private async applyCatchupPolicyIfNeeded(): Promise<void> {
+    if (!this.lastCursor) return;
+
+    const currentLedger = await this.transport.getCurrentLedger?.(HORIZON_URL);
+    if (currentLedger == null) return;
+
+    const lag = await this.cursorStore.getCursorLag(currentLedger);
+    if (lag == null) return;
+
+    cursorLagGauge.set(lag);
+    console.log(`[StellarEventListener] cursor lag: ${lag} ledgers`);
+
+    if (lag > MAX_CATCHUP_LEDGERS) {
+      console.warn(
+        `[StellarEventListener] cursor lag ${lag} exceeds MAX_CATCHUP_LEDGERS ` +
+          `(${MAX_CATCHUP_LEDGERS}) — resetting to current tip for full catchup`
+      );
+      this.lastCursor = null;
+    }
+  }
+
+  /**
+   * Emit the cursor_lag metric for the most recently processed event ledger.
+   */
+  private emitCursorLagMetric(eventLedger: number): void {
+    // We don't have real-time ledger here, so we record what we have:
+    // lag will be updated on next start/reconnect via applyCatchupPolicyIfNeeded.
+    // For per-event granularity, record relative to the event's own ledger.
+    // This is a best-effort metric; precise lag is computed on reconnect.
+    const cursor = this.lastCursor;
+    if (!cursor) return;
+    const ledger = parseLedgerFromCursor(cursor);
+    if (ledger !== null) {
+      // lag vs event ledger (0 when fully caught up)
+      cursorLagGauge.set(Math.max(0, eventLedger - ledger));
+    }
   }
 
   /**

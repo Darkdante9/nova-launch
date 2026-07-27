@@ -375,3 +375,71 @@ describe("Subscription.vaultMatured", () => {
     expect(await firstValueOrPending(it)).toBe("PENDING");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Subscription.campaignStepExecuted
+// ---------------------------------------------------------------------------
+
+const makeStepExecuted = (o: Record<string, unknown> = {}) => ({
+  campaignId: 1,
+  stepNumber: 1,
+  amount: "3000",
+  status: "COMPLETED",
+  txHash: "hashS",
+  executedAt: "2026-06-23T00:00:00.000Z",
+  totalSteps: 5,
+  executedAmount: "5000",
+  campaignStatus: "ACTIVE",
+  ...o,
+});
+
+describe("Subscription.campaignStepExecuted", () => {
+  it("delivers a step execution event", async () => {
+    const it = resolvers.Subscription.campaignStepExecuted.subscribe(
+      undefined,
+      {},
+      ctx
+    );
+    const pending = it.next();
+    await eventBus.publish(
+      SUBSCRIPTION_TOPICS.campaignStepExecuted,
+      makeStepExecuted()
+    );
+    const { value } = await pending;
+
+    expect(
+      resolvers.Subscription.campaignStepExecuted.resolve(value)
+    ).toMatchObject({
+      campaignId: 1,
+      stepNumber: 1,
+      status: "COMPLETED",
+    });
+  });
+
+  it("filters by campaignId argument", async () => {
+    const it = resolvers.Subscription.campaignStepExecuted.subscribe(
+      undefined,
+      { campaignId: 99 },
+      ctx
+    );
+    await eventBus.publish(
+      SUBSCRIPTION_TOPICS.campaignStepExecuted,
+      makeStepExecuted()
+    );
+    expect(await firstValueOrPending(it)).toBe("PENDING");
+  });
+
+  it("is not tenant scoped — buyback campaigns have no creator", async () => {
+    const it = resolvers.Subscription.campaignStepExecuted.subscribe(
+      undefined,
+      {},
+      {} // no tenant resolved at all
+    );
+    const pending = it.next();
+    await eventBus.publish(
+      SUBSCRIPTION_TOPICS.campaignStepExecuted,
+      makeStepExecuted()
+    );
+    expect((await pending).value).toMatchObject({ campaignId: 1 });
+  });
+});

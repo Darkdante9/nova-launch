@@ -109,6 +109,11 @@ export const typeDefs = /* GraphQL */ `
     updatedAt: DateTime!
     executedAt: DateTime
     votes(limit: Int, offset: Int): [Vote!]!
+    """
+    0-based position of this proposal in the FIFO execution queue for its
+    proposalType. Only meaningful while status is QUEUED; null otherwise.
+    """
+    queuePosition: Int
   }
 
   type Vote {
@@ -184,6 +189,10 @@ export const typeDefs = /* GraphQL */ `
       offset: Int
     ): [Proposal!]!
 
+    # Current FIFO execution queue (status = QUEUED), ordered by queue time.
+    # Optionally narrowed to a single proposalType.
+    governanceQueue(proposalType: ProposalType): [Proposal!]!
+
     # Campaign queries
     campaign(campaignId: Int!): Campaign
     campaigns(
@@ -237,6 +246,20 @@ export const typeDefs = /* GraphQL */ `
     timestamp: DateTime!
   }
 
+  type ProposalVoteCastEvent {
+    proposalId: Int!
+    tokenAddress: String!
+    creatorAddress: String!
+    voter: String!
+    support: Boolean!
+    weight: String!
+    votesFor: String!
+    votesAgainst: String!
+    reason: String
+    txHash: String!
+    timestamp: DateTime!
+  }
+
   # ── Root Subscription ───────────────────────────────────────────────────────
   #
   # All subscriptions are tenant scoped via the connection JWT. The optional
@@ -254,7 +277,19 @@ export const typeDefs = /* GraphQL */ `
     # to the proposals of a specific token address.
     proposalStatusChanged(tokenAddress: String): ProposalStatusChangedEvent!
 
+    # Emitted whenever a vote is cast on a governance proposal. Optionally
+    # filter to a specific proposal (by its on-chain proposalId). Carries the
+    # running for/against tallies so subscribers can update vote counts and
+    # quorum progress without a full refetch.
+    proposalVoteCast(proposalId: Int): ProposalVoteCastEvent!
+
     # Emitted when a vesting vault matures. Optionally filter to a recipient.
     vaultMatured(recipientAddress: String): VaultMaturedEvent!
+
+    # Emitted when a buyback campaign step completes on-chain. Optionally
+    # filter to a specific campaign. Unlike the events above, this stream is
+    # not tenant scoped — buyback campaigns are keyed by token address, not
+    # creator — so any authenticated connection receives all matching events.
+    campaignStepExecuted(campaignId: Int): CampaignStepExecutedEvent!
   }
 `;

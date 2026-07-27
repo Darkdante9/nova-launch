@@ -109,6 +109,102 @@ describe("Stream Routes", () => {
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/streams/creator/:address/paginated (keyset cursor pagination)
+  // -------------------------------------------------------------------------
+
+  describe("GET /api/streams/creator/:address/paginated", () => {
+    it("returns the first page ordered by streamId ascending when no cursor is given", async () => {
+      for (let i = 1; i <= 5; i++) {
+        await seedStream({ creator: "GKEYSET_A", streamId: i, txHash: `tx-keyset-${i}` });
+      }
+
+      const res = await request(app).get("/api/streams/creator/GKEYSET_A/paginated?limit=3");
+      expect(res.status).toBe(200);
+      expect(res.body.data.streams).toHaveLength(3);
+      expect(res.body.data.streams.map((s: any) => s.streamId)).toEqual([1, 2, 3]);
+      expect(res.body.data.hasMore).toBe(true);
+      expect(res.body.data.nextCursor).toBe(3);
+    });
+
+    it("returns the next page using the previous page's nextCursor, with no overlap or gap", async () => {
+      for (let i = 1; i <= 5; i++) {
+        await seedStream({ creator: "GKEYSET_B", streamId: i, txHash: `tx-keyset-b-${i}` });
+      }
+
+      const page1 = await request(app).get("/api/streams/creator/GKEYSET_B/paginated?limit=3");
+      expect(page1.body.data.streams.map((s: any) => s.streamId)).toEqual([1, 2, 3]);
+
+      const page2 = await request(app).get(
+        `/api/streams/creator/GKEYSET_B/paginated?limit=3&cursor=${page1.body.data.nextCursor}`
+      );
+      expect(page2.status).toBe(200);
+      expect(page2.body.data.streams.map((s: any) => s.streamId)).toEqual([4, 5]);
+      expect(page2.body.data.hasMore).toBe(false);
+      expect(page2.body.data.nextCursor).toBeNull();
+    });
+
+    it("a stream inserted between page fetches is not skipped or duplicated", async () => {
+      for (let i = 1; i <= 3; i++) {
+        await seedStream({ creator: "GKEYSET_C", streamId: i, txHash: `tx-keyset-c-${i}` });
+      }
+
+      const page1 = await request(app).get("/api/streams/creator/GKEYSET_C/paginated?limit=2");
+      expect(page1.body.data.streams.map((s: any) => s.streamId)).toEqual([1, 2]);
+      expect(page1.body.data.hasMore).toBe(true);
+
+      // Simulate a stream created concurrently with paging.
+      await seedStream({ creator: "GKEYSET_C", streamId: 4, txHash: "tx-keyset-c-4" });
+
+      const page2 = await request(app).get(
+        `/api/streams/creator/GKEYSET_C/paginated?limit=10&cursor=${page1.body.data.nextCursor}`
+      );
+      expect(page2.body.data.streams.map((s: any) => s.streamId)).toEqual([3, 4]);
+      expect(page2.body.data.hasMore).toBe(false);
+    });
+
+    it("returns hasMore=false and nextCursor=null on the last page", async () => {
+      for (let i = 1; i <= 4; i++) {
+        await seedStream({ creator: "GKEYSET_D", streamId: i, txHash: `tx-keyset-d-${i}` });
+      }
+
+      const res = await request(app).get("/api/streams/creator/GKEYSET_D/paginated?limit=10");
+      expect(res.status).toBe(200);
+      expect(res.body.data.streams).toHaveLength(4);
+      expect(res.body.data.hasMore).toBe(false);
+      expect(res.body.data.nextCursor).toBeNull();
+    });
+
+    it("returns an empty page for a creator with no streams", async () => {
+      const res = await request(app).get("/api/streams/creator/GKEYSET_EMPTY/paginated");
+      expect(res.status).toBe(200);
+      expect(res.body.data.streams).toHaveLength(0);
+      expect(res.body.data.hasMore).toBe(false);
+      expect(res.body.data.nextCursor).toBeNull();
+    });
+
+    it("clamps limit to a maximum of 50", async () => {
+      for (let i = 1; i <= 60; i++) {
+        await seedStream({ creator: "GKEYSET_MAX", streamId: i, txHash: `tx-keyset-max-${i}` });
+      }
+
+      const res = await request(app).get("/api/streams/creator/GKEYSET_MAX/paginated?limit=1000");
+      expect(res.status).toBe(200);
+      expect(res.body.data.streams).toHaveLength(50);
+      expect(res.body.data.hasMore).toBe(true);
+    });
+
+    it("returns 400 for a non-numeric cursor", async () => {
+      const res = await request(app).get("/api/streams/creator/GKEYSET_A/paginated?cursor=abc");
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 400 for invalid status", async () => {
+      const res = await request(app).get("/api/streams/creator/GKEYSET_A/paginated?status=BOGUS");
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/streams/recipient/:address
   // -------------------------------------------------------------------------
 

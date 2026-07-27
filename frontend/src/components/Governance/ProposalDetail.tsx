@@ -5,7 +5,7 @@
  * Issue: #617 - Add Governance Read Integration to Frontend Dashboard
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card } from '../UI/Card';
 import { Spinner } from '../UI/Spinner';
 import { Button } from '../UI/Button';
@@ -18,6 +18,7 @@ import {
     type ExecutionEntry,
 } from '../../services/governanceApi';
 import type { GovernanceProposal, GovernanceVote, WalletState } from '../../types';
+import { QuorumProgressBar } from './QuorumProgressBar';
 
 export interface ProposalDetailProps {
     /** Proposal ID */
@@ -94,6 +95,27 @@ export function ProposalDetail({
     useEffect(() => {
         fetchData();
     }, [fetchData]);
+
+    // Poll for live vote updates every 5 seconds while proposal is active
+    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    useEffect(() => {
+        if (proposal?.status !== 'active') return;
+        pollRef.current = setInterval(async () => {
+            try {
+                const [proposalData, votesData] = await Promise.all([
+                    fetchProposal(proposalId),
+                    fetchProposalVotes(proposalId, 1, 20),
+                ]);
+                setProposal(proposalData);
+                setVotes(votesData.votes);
+            } catch {
+                // silent — don't surface poll errors
+            }
+        }, 5_000);
+        return () => {
+            if (pollRef.current) clearInterval(pollRef.current);
+        };
+    }, [proposal?.status, proposalId]);
 
     /**
      * Submit a vote
@@ -224,6 +246,15 @@ export function ProposalDetail({
                             style={{ width: `${againstPercentage}%` }}
                         />
                     </div>
+                </div>
+
+                {/* Quorum progress */}
+                <div className="mt-4">
+                    <QuorumProgressBar
+                        votesFor={proposal.votesFor}
+                        votesAgainst={proposal.votesAgainst}
+                        quorum={proposal.quorum}
+                    />
                 </div>
             </div>
 

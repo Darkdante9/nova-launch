@@ -446,14 +446,14 @@ fn grant_role_emits_role_granted_event() {
     client.grant_role(&admin, &token_index, &grantee, &Role::Minter).unwrap();
 
     let events = env.events().all();
-    let target = soroban_sdk::Symbol::new(&env, "role_gr_v1");
+    let target = soroban_sdk::Symbol::new(&env, "role_gr1");
     let found = events.iter().any(|e| {
         e.1.get(0)
             .and_then(|v| soroban_sdk::Symbol::try_from_val(&env, &v).ok())
             .map(|s| s == target)
             .unwrap_or(false)
     });
-    assert!(found, "role_gr_v1 event must be emitted on grant_role");
+    assert!(found, "role_gr1 event must be emitted on grant_role");
 }
 
 #[test]
@@ -466,14 +466,14 @@ fn revoke_role_emits_role_revoked_event() {
     client.revoke_role(&admin, &token_index, &grantee, &Role::Minter).unwrap();
 
     let events = env.events().all();
-    let target = soroban_sdk::Symbol::new(&env, "role_rv_v1");
+    let target = soroban_sdk::Symbol::new(&env, "role_rv1");
     let found = events.iter().any(|e| {
         e.1.get(0)
             .and_then(|v| soroban_sdk::Symbol::try_from_val(&env, &v).ok())
             .map(|s| s == target)
             .unwrap_or(false)
     });
-    assert!(found, "role_rv_v1 event must be emitted on revoke_role");
+    assert!(found, "role_rv1 event must be emitted on revoke_role");
 }
 
 // ── Edge cases ────────────────────────────────────────────────────────────────

@@ -138,6 +138,7 @@ impl<'a> ProposalBuilder<'a> {
             ActionType::PauseContract | ActionType::UnpauseContract => pause_payload(self.env),
             ActionType::TreasuryChange => treasury_change_payload(self.env, &Address::generate(self.env)),
             ActionType::PolicyUpdate => policy_update_payload(self.env, 100_0000000, true, 86400),
+            ActionType::ParameterChange => test_payload(self.env, &[0u8; 32]),
         };
         self
     }
@@ -236,7 +237,7 @@ impl<'a> EventAssertions<'a> {
         Self { env }
     }
 
-    pub fn all(&self) -> soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)> {
+    pub fn all(&self) -> soroban_sdk::testutils::ContractEvents {
         self.env.events().all()
     }
 
@@ -261,15 +262,16 @@ impl<'a> EventAssertions<'a> {
     }
 
     fn count(&self, name: &str) -> usize {
+        use soroban_sdk::xdr::ContractEventBody;
+
         let target = Symbol::new(self.env, name);
         let mut n = 0usize;
-        for evt in self.env.events().all().iter() {
-            let topics = evt.1;
-            if topics.len() == 0 {
+        for evt in self.env.events().all().events() {
+            let ContractEventBody::V0(body) = &evt.body;
+            let Some(first) = body.topics.get(0) else {
                 continue;
-            }
-            let first = topics.get(0).unwrap();
-            if let Ok(sym) = Symbol::try_from_val(self.env, &first) {
+            };
+            if let Ok(sym) = Symbol::try_from_val(self.env, first) {
                 if sym == target {
                     n += 1;
                 }

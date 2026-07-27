@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import Redis from "ioredis";
+import { createRedisClient, getRedis } from "../lib/redis";
 
 /**
  * Configuration for a rate limit rule.
@@ -15,24 +16,11 @@ export interface RateLimitConfig {
   keyPrefix?: string;
 }
 
-/**
- * Creates a Redis client from environment variables.
- * Falls back to localhost:6379 if REDIS_URL is not set.
- */
-export function createRedisClient(): Redis {
-  const url = process.env.REDIS_URL || "redis://localhost:6379";
-  const client = new Redis(url, {
-    // Fail fast on connection errors rather than blocking requests
-    enableOfflineQueue: false,
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-  });
-  client.on("error", (err) => {
-    // Log but don't crash — fallback logic handles unavailability
-    console.error("[RateLimiter] Redis error:", err.message);
-  });
-  return client;
-}
+// `createRedisClient` now lives in `../lib/redis` so other modules (e.g. the
+// leaderboard sorted-set cache) can share the exact same client-creation
+// convention. Re-exported here for backwards compatibility with existing
+// imports of `middleware/rateLimiter`.
+export { createRedisClient };
 
 /**
  * Sliding-window counter using Redis ZADD / ZREMRANGEBYSCORE.
@@ -181,14 +169,6 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
 
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"); // 15 min
 const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100");
-
-/** Lazily-initialised shared Redis client */
-let _redis: Redis | null = null;
-
-function getRedis(): Redis {
-  if (!_redis) _redis = createRedisClient();
-  return _redis;
-}
 
 /**
  * Global rate limiter for all API endpoints.

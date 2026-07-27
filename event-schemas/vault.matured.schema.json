@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/vault.matured.schema.json",
+  "title": "VaultMaturedEvent",
+  "description": "Published when a vesting/locking vault reaches maturity and is released. Consumed by the GraphQL `vaultMatured` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.vaultMatured).",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "vault.matured",
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Schema version for this event type. Bump on breaking changes."
+    },
+    "creatorAddress": {
+      "type": "string",
+      "description": "Owning token's creator address, used for tenant scoping (TenantScopedPayload)."
+    },
+    "vaultId": {
+      "type": "integer"
+    },
+    "recipientAddress": {
+      "type": "string"
+    },
+    "amount": {
+      "description": "Amount released — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive."
+    },
+    "txHash": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "creatorAddress",
+    "vaultId",
+    "recipientAddress",
+    "amount",
+    "txHash",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

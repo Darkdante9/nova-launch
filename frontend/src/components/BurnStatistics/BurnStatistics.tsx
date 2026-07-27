@@ -4,8 +4,11 @@ import type { BurnStats, BurnRecord, BurnHistoryFilter } from '../../types';
 import { StatCard, StatCardSkeleton } from './StatCard';
 import { BurnHistoryTable } from './BurnHistoryTable';
 import { BurnChart, BurnChartSkeleton } from './BurnChart';
+import { CrossTokenSummaryTab } from './CrossTokenSummaryTab';
 import { formatTokenAmount, calculatePercentBurned } from './utils';
 import './BurnStatistics.css';
+
+type ActiveTab = 'single-token' | 'cross-token';
 
 interface BurnStatisticsProps {
   tokenAddress: string;
@@ -58,6 +61,7 @@ export function BurnStatistics({
   symbol = '',
   className = '',
 }: BurnStatisticsProps) {
+  const [activeTab, setActiveTab] = useState<ActiveTab>('single-token');
   const [stats, setStats] = useState<BurnStats | null>(null);
   const [history, setHistory] = useState<BurnRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -114,34 +118,69 @@ export function BurnStatistics({
     setFilter(newFilter);
   };
 
+  const tabNav = (
+    <div className="flex gap-1 p-1 bg-gray-100 rounded-lg mb-6 w-fit">
+      <button
+        onClick={() => setActiveTab('single-token')}
+        className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+          activeTab === 'single-token'
+            ? 'bg-white text-gray-900 shadow-sm'
+            : 'text-gray-600 hover:text-gray-800'
+        }`}
+        data-testid="tab-single-token"
+      >
+        Single Token
+      </button>
+      <button
+        onClick={() => setActiveTab('cross-token')}
+        className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+          activeTab === 'cross-token'
+            ? 'bg-white text-gray-900 shadow-sm'
+            : 'text-gray-600 hover:text-gray-800'
+        }`}
+        data-testid="tab-cross-token"
+      >
+        Cross-Token Summary
+      </button>
+    </div>
+  );
+
   if (loading) {
     return (
       <div className={`burn-statistics ${className}`}>
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-4">
           <h2 className="text-2xl font-bold text-gray-900">Burn Statistics</h2>
         </div>
-        
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          {[...Array(4)].map((_, i) => (
-            <StatCardSkeleton key={i} />
-          ))}
-        </div>
-        
-        <BurnChartSkeleton className="mb-6" />
-        
-        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="flex items-center gap-4 animate-pulse">
-                <div className="h-4 bg-gray-200 rounded w-32" />
-                <div className="h-4 bg-gray-200 rounded w-24" />
-                <div className="h-4 bg-gray-200 rounded w-20" />
-                <div className="h-4 bg-gray-200 rounded w-16" />
-                <div className="h-4 bg-gray-200 rounded w-12" />
+
+        {tabNav}
+
+        {activeTab === 'cross-token' ? (
+          <CrossTokenSummaryTab decimals={decimals} symbol={symbol} />
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              {[...Array(4)].map((_, i) => (
+                <StatCardSkeleton key={i} />
+              ))}
+            </div>
+
+            <BurnChartSkeleton className="mb-6" />
+
+            <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+              <div className="space-y-4">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="flex items-center gap-4 animate-pulse">
+                    <div className="h-4 bg-gray-200 rounded w-32" />
+                    <div className="h-4 bg-gray-200 rounded w-24" />
+                    <div className="h-4 bg-gray-200 rounded w-20" />
+                    <div className="h-4 bg-gray-200 rounded w-16" />
+                    <div className="h-4 bg-gray-200 rounded w-12" />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -178,18 +217,31 @@ export function BurnStatistics({
   return (
     <div className={`burn-statistics ${className}`}>
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <h2 className="text-2xl font-bold text-gray-900">Burn Statistics</h2>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        {activeTab === 'single-token' && (
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        )}
       </div>
 
+      {/* Tab navigation */}
+      {tabNav}
+
+      {/* Cross-Token Summary tab */}
+      {activeTab === 'cross-token' && (
+        <CrossTokenSummaryTab decimals={decimals} symbol={symbol} />
+      )}
+
+      {/* Single-token content */}
+      {activeTab === 'single-token' && (
+        <>
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard
@@ -272,6 +324,8 @@ export function BurnStatistics({
           symbol={symbol}
         />
       </div>
+        </>
+      )}
     </div>
   );
 }

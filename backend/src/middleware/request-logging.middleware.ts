@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { runWithContext } from '../lib/async-context';
+import { parseTraceParent } from './correlation-logging';
 
 /**
  * Header names — canonical (lowercase for Node.js header map).
@@ -49,6 +50,11 @@ export const requestLoggingMiddleware = (
   // through every backend/outbound call unchanged.
   const transactionId =
     (req.headers[HEADER_TRANSACTION_ID] as string) || undefined;
+
+  // Parsed incoming W3C traceparent (#1333) — attached to the async context
+  // below so outbound calls (see outboundHttpClient.ts) can re-propagate it
+  // even when no OTel SDK span is active (e.g. OTEL_SDK_DISABLED=true).
+  const traceContext = parseTraceParent(req.headers['traceparent']);
 
   // Attach IDs to request object and response headers
   req.headers[HEADER_REQUEST_ID]    = requestId;
@@ -101,5 +107,5 @@ export const requestLoggingMiddleware = (
     });
 
     next();
-  }, transactionId);
+  }, transactionId, traceContext);
 };

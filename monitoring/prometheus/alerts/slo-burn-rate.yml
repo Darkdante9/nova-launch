@@ -1,0 +1,181 @@
+##############################################################################
+# Alert Rules — SLO Burn-Rate (Multi-Window, Multi-Burn-Rate)
+# Follows the Google SRE Workbook pattern.
+#
+# SLOs:
+#   - API Availability:        99.9%  (error budget: 0.1%)
+#   - API p95 Latency:         < 500ms
+#   - Webhook Delivery:        99%    (error budget: 1%)
+#
+# Burn-rate tiers:
+#   Fast burn  — 5 min window,  14× rate → exhausts budget in ~1 h  → P1/critical
+#   Slow burn  — 1 h  window,   2×  rate → exhausts budget in ~3 d  → P2/warning
+##############################################################################
+
+groups:
+  # --------------------------------------------------------------------------
+  # SLO 1 — API Availability (99.9%)
+  # error_ratio = 5xx / total
+  # --------------------------------------------------------------------------
+  - name: slo_api_availability
+    interval: 30s
+    rules:
+      # Convenience recording rules keep alert expressions readable
+      - record: job:http_error_ratio:rate5m
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      - record: job:http_error_ratio:rate1h
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total[1h]))
+
+      # Fast burn: 14× error budget (0.1%) over 5-minute window → P1
+      - alert: SLOAvailabilityFastBurn
+        expr: job:http_error_ratio:rate5m > (14 * 0.001)
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+          slo: api_availability
+          burn_rate: fast
+        annotations:
+          summary: "P1: API availability fast burn — SLO budget exhausting rapidly"
+          description: >
+            Error ratio is {{ $value | humanizePercentage }} (threshold: 1.4%).
+            At this rate the 30-day error budget will be exhausted in ~1 hour.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-availability.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
+
+      # Slow burn: 2× error budget (0.1%) over 1-hour window → P2
+      - alert: SLOAvailabilitySlowBurn
+        expr: job:http_error_ratio:rate1h > (2 * 0.001)
+        for: 1h
+        labels:
+          severity: warning
+          team: backend
+          slo: api_availability
+          burn_rate: slow
+        annotations:
+          summary: "P2: API availability slow burn — SLO budget eroding"
+          description: >
+            Error ratio is {{ $value | humanizePercentage }} over the last hour (threshold: 0.2%).
+            At this rate the 30-day error budget will be exhausted in ~3 days.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-availability.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
+
+  # --------------------------------------------------------------------------
+  # SLO 2 — API p95 Latency (< 500ms)
+  # bad_ratio = requests where latency > 500ms / total
+  # --------------------------------------------------------------------------
+  - name: slo_api_latency
+    interval: 30s
+    rules:
+      # Requests where p95 latency exceeds 500ms: approximated as the fraction
+      # of histogram observations above the 500ms bucket boundary.
+      - record: job:http_latency_bad_ratio:rate5m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_bucket{le="+Inf"}[5m]))
+          )
+
+      - record: job:http_latency_bad_ratio:rate1h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{le="0.5"}[1h]))
+            /
+            sum(rate(http_request_duration_seconds_bucket{le="+Inf"}[1h]))
+          )
+
+      # SLO target: 99% of requests within 500ms → error budget: 1%
+      # Fast burn: 14× budget (1%) over 5 minutes → P1
+      - alert: SLOLatencyFastBurn
+        expr: job:http_latency_bad_ratio:rate5m > (14 * 0.01)
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+          slo: api_latency
+          burn_rate: fast
+        annotations:
+          summary: "P1: API latency fast burn — p95 SLO budget exhausting rapidly"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceed the 500ms p95 threshold
+            (fast-burn limit: 14%). Budget will be exhausted in ~1 hour.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-latency.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
+
+      # Slow burn: 2× budget (1%) over 1 hour → P2
+      - alert: SLOLatencySlowBurn
+        expr: job:http_latency_bad_ratio:rate1h > (2 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          team: backend
+          slo: api_latency
+          burn_rate: slow
+        annotations:
+          summary: "P2: API latency slow burn — p95 SLO budget eroding"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceed the 500ms p95 threshold
+            over the last hour (slow-burn limit: 2%). Budget will be exhausted in ~3 days.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-latency.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
+
+  # --------------------------------------------------------------------------
+  # SLO 3 — Webhook Delivery Success Rate (> 99%)
+  # error_ratio = failure deliveries / total deliveries
+  # --------------------------------------------------------------------------
+  - name: slo_webhook_delivery
+    interval: 30s
+    rules:
+      - record: job:webhook_error_ratio:rate5m
+        expr: |
+          sum(rate(webhook_deliveries_total{status="failure"}[5m]))
+          /
+          sum(rate(webhook_deliveries_total[5m]))
+
+      - record: job:webhook_error_ratio:rate1h
+        expr: |
+          sum(rate(webhook_deliveries_total{status="failure"}[1h]))
+          /
+          sum(rate(webhook_deliveries_total[1h]))
+
+      # Fast burn: 14× error budget (1%) over 5 minutes → P1
+      - alert: SLOWebhookDeliveryFastBurn
+        expr: job:webhook_error_ratio:rate5m > (14 * 0.01)
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+          slo: webhook_delivery
+          burn_rate: fast
+        annotations:
+          summary: "P1: Webhook delivery fast burn — SLO budget exhausting rapidly"
+          description: >
+            Webhook failure ratio is {{ $value | humanizePercentage }} (fast-burn limit: 14%).
+            At this rate the 30-day error budget will be exhausted in ~1 hour.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-webhooks.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
+
+      # Slow burn: 2× error budget (1%) over 1 hour → P2
+      - alert: SLOWebhookDeliverySlowBurn
+        expr: job:webhook_error_ratio:rate1h > (2 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          team: backend
+          slo: webhook_delivery
+          burn_rate: slow
+        annotations:
+          summary: "P2: Webhook delivery slow burn — SLO budget eroding"
+          description: >
+            Webhook failure ratio is {{ $value | humanizePercentage }} over the last hour
+            (slow-burn limit: 2%). Budget will be exhausted in ~3 days.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-webhooks.md"
+          dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"

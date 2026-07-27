@@ -28,6 +28,12 @@
 process.env.WEBHOOK_MAX_RETRIES = '1'
 process.env.WEBHOOK_TIMEOUT_MS = '2000'
 process.env.WEBHOOK_RETRY_DELAY_MS = '0'
+// This test measures wall-clock parallelism — per-tenant rate-limit queuing
+// would corrupt the timing assertions, and isn't what this test is about.
+// Raise the bucket far above this file's call volumes so deliveries are
+// never queued here (see TenantWebhookRateLimiter).
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = '100000'
+process.env.WEBHOOK_RATE_LIMIT_BURST = '10000'
 
 import nock from 'nock'
 import { describe, it, beforeEach, afterEach, vi, expect } from 'vitest'

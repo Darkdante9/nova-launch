@@ -11,6 +11,14 @@
  *   - Verify delivery records/metrics are updated correctly
  */
 
+// Set BEFORE importing webhookDeliveryService so the per-tenant rate
+// limiter singleton (created at module load) picks up a large bucket. This
+// file's fixtures share one createdBy/"tenant" across many `it()` blocks
+// with no module reset, and is about network-failure handling, not rate
+// limiting — raise the bucket so deliveries here are never queued.
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = "100000";
+process.env.WEBHOOK_RATE_LIMIT_BURST = "10000";
+
 import { describe, it, beforeEach, afterEach, vi, expect } from "vitest";
 import nock from "nock";
 import { v4 as uuidv4 } from "uuid";

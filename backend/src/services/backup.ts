@@ -18,6 +18,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import fs from "fs/promises";
+import { Database } from "../config/database";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +65,30 @@ export interface RestoreResult {
   message: string;
   dryRun: boolean;
   durationMs: number;
+}
+
+export interface AuditArchiveResult {
+  success: boolean;
+  /** Number of records written to the archive file. */
+  archived: number;
+  /** Storage tier the records were written to. */
+  tier: "warm" | "cold";
+  /** Absolute path to the NDJSON archive file that was created. */
+  path: string;
+  /** Duration of the archive operation in milliseconds. */
+  durationMs: number;
+  /** Present only on failure. */
+  error?: string;
+}
+
+export interface AuditArchiveCheckpointData {
+  id: string;
+  lastArchivedAt: Date;
+  tier: "warm" | "cold";
+  totalArchived: number;
+  inProgress: boolean;
+  startedAt: Date;
+  completedAt?: Date;
 }
 
 export class BackupService {
@@ -200,6 +225,65 @@ export class BackupService {
         message: `Restore failed: ${err.message ?? String(err)}`,
         dryRun: !options.confirmed,
         durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  /**
+   * Archive audit log records older than `olderThan` to the specified tier.
+   *
+   * - warm: records 91-365 days old  → <storagePath>/audit/warm/audit-<ts>.ndjson
+   * - cold: records >365 days old    → <storagePath>/audit/cold/audit-<ts>.ndjson
+   *         (in production this would upload to S3; here we write locally)
+   *
+   * Records are serialised as NDJSON (newline-delimited JSON) so the file can
+   * be streamed line-by-line without loading the whole archive into memory.
+   */
+  async archiveAuditRecords(
+    olderThan: Date,
+    tier: "warm" | "cold" = "cold"
+  ): Promise<AuditArchiveResult> {
+    const start = Date.now();
+    const tierDir = path.join(this.storagePath, "audit", tier);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filePath = path.join(tierDir, `audit-${timestamp}.ndjson`);
+
+    try {
+      const allLogs = await Database.getAuditLogs();
+      const records = allLogs.filter((l) => l.timestamp < olderThan);
+
+      if (records.length === 0) {
+        return {
+          success: true,
+          archived: 0,
+          tier,
+          path: filePath,
+          durationMs: Date.now() - start,
+        };
+      }
+
+      await fs.mkdir(tierDir, { recursive: true });
+
+      const ndjson = records
+        .map((r) => JSON.stringify(r))
+        .join("\n");
+      await fs.writeFile(filePath, ndjson + "\n", "utf-8");
+
+      return {
+        success: true,
+        archived: records.length,
+        tier,
+        path: filePath,
+        durationMs: Date.now() - start,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        archived: 0,
+        tier,
+        path: filePath,
+        durationMs: Date.now() - start,
+        error: err.message ?? String(err),
       };
     }
   }

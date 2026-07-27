@@ -10,9 +10,18 @@
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events},
-    Address, Env, String, Vec,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, String, Symbol, TryFromVal, Val, Vec,
 };
+
+/// `Val` has no `PartialEq`/`From<Symbol>` impl in this SDK version, so event
+/// topic comparisons must go through `Symbol` instead of comparing raw
+/// `Val`s directly.
+fn topic_is(env: &Env, topic: &Val, expected: Symbol) -> bool {
+    Symbol::try_from_val(env, topic)
+        .map(|s| s == expected)
+        .unwrap_or(false)
+}
 use crate::{TokenFactory, TokenFactoryClient};
 
 // ── Setup Helpers ─────────────────────────────────────────────────────────────
@@ -31,28 +40,48 @@ fn setup_factory(env: &Env) -> (TokenFactoryClient, Address, Address) {
 
 // ── Event Testing Utilities ───────────────────────────────────────────────────
 
+/// Returns all events emitted so far as `(topics, data)` pairs.
+///
+/// `Events::all()` returns a `ContractEvents` (XDR-backed) in this SDK
+/// version rather than the old `Vec<(Address, Vec<Val>, Val)>`, so this
+/// helper bridges back to the shape the rest of this file's assertions
+/// expect: a `Vec` of `(topics, data)` tuples.
+fn all_events(env: &Env) -> soroban_sdk::Vec<(soroban_sdk::Vec<Val>, Val)> {
+    let mut result = soroban_sdk::Vec::new(env);
+    for evt in env.events().all().events() {
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &evt.body;
+        let mut topics = soroban_sdk::Vec::new(env);
+        for t in body.topics.iter() {
+            topics.push_back(Val::try_from_val(env, t).unwrap());
+        }
+        let data = Val::try_from_val(env, &body.data).unwrap();
+        result.push_back((topics, data));
+    }
+    result
+}
+
 /// Returns the total number of events emitted in this environment.
 fn count_events(env: &Env) -> usize {
-    env.events().all().len() as usize
+    all_events(env).len() as usize
 }
 
 /// Returns true if any event with the given topic symbol was emitted.
-fn event_emitted(env: &Env, topic: soroban_sdk::Symbol) -> bool {
-    env.events().all().iter().any(|e| {
-        e.0.iter().any(|t| t == soroban_sdk::Val::from(topic.clone()))
+fn event_emitted(env: &Env, topic: Symbol) -> bool {
+    all_events(env).iter().any(|e| {
+        e.0.iter().any(|t| topic_is(env, &t, topic.clone()))
     })
 }
 
 /// Returns all events whose first topic matches the given symbol.
 fn get_events_by_topic(
     env: &Env,
-    topic: soroban_sdk::Symbol,
-) -> soroban_sdk::Vec<(soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
-    let all = env.events().all();
+    topic: Symbol,
+) -> soroban_sdk::Vec<(soroban_sdk::Vec<Val>, Val)> {
+    let all = all_events(env);
     let mut result = soroban_sdk::Vec::new(env);
     for event in all.iter() {
         if let Some(first) = event.0.get(0) {
-            if first == soroban_sdk::Val::from(topic.clone()) {
+            if topic_is(env, &first, topic.clone()) {
                 result.push_back(event);
             }
         }
@@ -69,18 +98,20 @@ fn test_admin_transfer_event_emitted() {
     let (client, admin, _) = setup_factory(&env);
     let new_admin = Address::generate(&env);
 
-    let initial_count = count_events(&env);
     client.transfer_admin(&admin, &new_admin);
 
-    let events = env.events().all();
+    // `events().all()` only reflects the most recent top-level invocation in
+    // this SDK version, so the events visible right after this call are
+    // exactly (and only) those `transfer_admin` itself emitted.
+    let events = all_events(&env);
     assert_eq!(
-        events.len() as usize - initial_count,
+        events.len(),
         1,
         "exactly one event should be emitted on admin transfer"
     );
     let event = events.get(events.len() - 1).unwrap();
     let topic = event.0.get(0).unwrap();
-    assert_eq!(topic, soroban_sdk::Val::from(symbol_short!("adm_xf_v1")));
+    assert!(topic_is(&env, &topic, symbol_short!("adm_xf_v1")));
 }
 
 #[test]
@@ -92,7 +123,7 @@ fn test_admin_transfer_event_data_accuracy() {
 
     client.transfer_admin(&admin, &new_admin);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     // Payload: (old_admin, new_admin)
     let data = event.1;
@@ -111,12 +142,11 @@ fn test_pause_event_emitted() {
 
     client.pause(&admin);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let last = events.get(events.len() - 1).unwrap();
     let topic = last.0.get(0).unwrap();
-    assert_eq!(
-        topic,
-        soroban_sdk::Val::from(symbol_short!("pause_v1")),
+    assert!(
+        topic_is(&env, &topic, symbol_short!("pause_v1")),
         "pause event should be emitted"
     );
 }
@@ -130,12 +160,11 @@ fn test_unpause_event_emitted() {
     client.pause(&admin);
     client.unpause(&admin);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let last = events.get(events.len() - 1).unwrap();
     let topic = last.0.get(0).unwrap();
-    assert_eq!(
-        topic,
-        soroban_sdk::Val::from(symbol_short!("unpaus_v1")),
+    assert!(
+        topic_is(&env, &topic, symbol_short!("unpaus_v1")),
         "unpause event should be emitted after unpausing"
     );
 }
@@ -147,106 +176,130 @@ fn test_pause_unpause_event_data_contains_admin() {
     let (client, admin, _) = setup_factory(&env);
 
     client.pause(&admin);
-    let events = env.events().all();
+    let events = all_events(&env);
     let pause_event = events.get(events.len() - 1).unwrap();
     let payload: (Address,) = soroban_sdk::FromVal::from_val(&env, &pause_event.1);
     assert_eq!(payload.0, admin, "pause event must contain admin address");
 
     client.unpause(&admin);
-    let events = env.events().all();
+    let events = all_events(&env);
     let unpause_event = events.get(events.len() - 1).unwrap();
     let payload: (Address,) = soroban_sdk::FromVal::from_val(&env, &unpause_event.1);
     assert_eq!(payload.0, admin, "unpause event must contain admin address");
 }
 
-// ── Fees Updated Event Tests ──────────────────────────────────────────────
+// ── Fee Update Governance Event Tests (#1385) ─────────────────────────────
+//
+// Direct admin fee updates were removed; fee changes now flow through
+// propose_fee_update -> vote_proposal -> queue_proposal -> execute_proposal.
+// `fee_up_v2` is still emitted on execution (generic fee-changed event), in
+// addition to the new dedicated `fe_pr_v1`/`fe_qu_v1`/`fe_ex_v1` events.
+
+fn run_fee_governance_flow(
+    env: &Env,
+    client: &TokenFactoryClient,
+    admin: &Address,
+    new_base: i128,
+    new_meta: i128,
+) -> u64 {
+    let now = env.ledger().timestamp();
+    let start = now + 10;
+    let end = start + 86_400;
+    let eta = end + 3_600;
+
+    let proposal_id = client.propose_fee_update(admin, &new_base, &new_meta, &start, &end, &eta);
+
+    env.ledger().with_mut(|li| li.timestamp = start + 1);
+    let voter = Address::generate(env);
+    client.vote_proposal(&voter, &proposal_id, &crate::types::VoteChoice::For);
+
+    env.ledger().with_mut(|li| li.timestamp = end + 1);
+    client.queue_proposal(&proposal_id);
+
+    env.ledger().with_mut(|li| li.timestamp = eta + 1);
+    client.execute_proposal(&proposal_id);
+
+    proposal_id
+}
 
 #[test]
-fn test_fee_upd_event_emitted() {
+fn test_fee_up_v2_event_emitted_on_governance_execution() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
     let new_base = 50_000_000i128;
     let new_meta = 20_000_000i128;
-    client.update_fees(&admin, &Some(new_base), &Some(new_meta));
+    run_fee_governance_flow(&env, &client, &admin, new_base, new_meta);
 
-    let events = env.events().all();
-    let last = events.get(events.len() - 1).unwrap();
-    let topic = last.0.get(0).unwrap();
-    assert_eq!(
-        topic,
-        soroban_sdk::Val::from(symbol_short!("fee_up_v1")),
-        "fee_upd event should be emitted"
-    );
+    let events = all_events(&env);
+    let found = (0..events.len()).any(|i| {
+        let topic = events.get(i).unwrap().0.get(0).unwrap();
+        topic_is(&env, &topic, symbol_short!("fee_up_v2"))
+    });
+    assert!(found, "fee_up_v2 event should be emitted on proposal execution");
 }
 
 #[test]
-fn test_fee_upd_event_data_accuracy() {
+fn test_fee_update_executed_event_data_accuracy() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
     let new_base = 50_000_000i128;
     let new_meta = 20_000_000i128;
-    client.update_fees(&admin, &Some(new_base), &Some(new_meta));
+    run_fee_governance_flow(&env, &client, &admin, new_base, new_meta);
 
-    let events = env.events().all();
-    let last = events.get(events.len() - 1).unwrap();
-    // Payload: (base_fee, metadata_fee) — new values
-    let payload: (i128, i128) = soroban_sdk::FromVal::from_val(&env, &last.1);
-    assert_eq!(payload.0, new_base, "new base_fee must match in event");
-    assert_eq!(payload.1, new_meta, "new metadata_fee must match in event");
+    assert_eq!(client.get_base_fee(), new_base, "new base_fee must be applied");
+    assert_eq!(client.get_metadata_fee(), new_meta, "new metadata_fee must be applied");
 }
 
 #[test]
-fn test_fee_upd_only_base_fee() {
+fn test_fee_update_proposed_event_emitted() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
-    client.update_fees(&admin, &Some(40_000_000), &None);
+    let now = env.ledger().timestamp();
+    let start = now + 10;
+    let end = start + 86_400;
+    let eta = end + 3_600;
+    client.propose_fee_update(&admin, &40_000_000, &10_000_000, &start, &end, &eta);
 
-    let events = env.events().all();
-    let last = events.get(events.len() - 1).unwrap();
-    let topic = last.0.get(0).unwrap();
-    assert_eq!(
-        topic,
-        soroban_sdk::Val::from(symbol_short!("fee_up_v1")),
-        "fee_upd should be emitted even for partial update"
-    );
+    let events = all_events(&env);
+    let found = (0..events.len()).any(|i| {
+        let topic = events.get(i).unwrap().0.get(0).unwrap();
+        topic_is(&env, &topic, symbol_short!("fe_pr_v1"))
+    });
+    assert!(found, "fe_pr_v1 (FeeUpdateProposed) should be emitted when proposing");
 }
 
 // ── Multiple Events Ordering Tests ───────────────────────────────────────
 
 #[test]
 fn test_multiple_events_ordered() {
+    // `events().all()` only reflects the most recent top-level invocation in
+    // this SDK version (each contract call's event log is independent), so
+    // "ordering" is verified per-call rather than across a combined log.
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
     let new_admin = Address::generate(&env);
 
-    // Event 1: fee_upd
-    client.update_fees(&admin, &Some(50_000_000), &Some(20_000_000));
-    // Event 2: pause
     client.pause(&admin);
-    // Event 3: unpause
+    let pause_events = all_events(&env);
+    assert_eq!(pause_events.len(), 1, "pause must emit exactly 1 event");
+    assert!(topic_is(&env, &pause_events.get(0).unwrap().0.get(0).unwrap(), symbol_short!("pause_v1")));
+
     client.unpause(&admin);
-    // Event 4: adm_xfer
+    let unpause_events = all_events(&env);
+    assert_eq!(unpause_events.len(), 1, "unpause must emit exactly 1 event");
+    assert!(topic_is(&env, &unpause_events.get(0).unwrap().0.get(0).unwrap(), symbol_short!("unpaus_v1")));
+
     client.transfer_admin(&admin, &new_admin);
-
-    let events = env.events().all();
-    assert_eq!(events.len(), 4, "exactly 4 events should be emitted");
-
-    let t0 = events.get(0).unwrap().0.get(0).unwrap();
-    let t1 = events.get(1).unwrap().0.get(0).unwrap();
-    let t2 = events.get(2).unwrap().0.get(0).unwrap();
-    let t3 = events.get(3).unwrap().0.get(0).unwrap();
-
-    assert_eq!(t0, soroban_sdk::Val::from(symbol_short!("fee_up_v1")));
-    assert_eq!(t1, soroban_sdk::Val::from(symbol_short!("pause_v1")));
-    assert_eq!(t2, soroban_sdk::Val::from(symbol_short!("unpaus_v1")));
-    assert_eq!(t3, soroban_sdk::Val::from(symbol_short!("adm_xf_v1")));
+    let transfer_events = all_events(&env);
+    assert_eq!(transfer_events.len(), 1, "transfer_admin must emit exactly 1 event");
+    assert!(topic_is(&env, &transfer_events.get(0).unwrap().0.get(0).unwrap(), symbol_short!("adm_xf_v1")));
 }
 
 // ── No Event on Read-Only Functions ──────────────────────────────────────
@@ -260,7 +313,7 @@ fn test_no_event_on_readonly_functions() {
     // Read-only calls
     let _ = client.get_state();
     let _ = client.is_paused();
-    let _ = client.get_token_count();
+    let _ = client.get_base_fee();
 
     assert_eq!(
         count_events(&env),
@@ -279,13 +332,12 @@ fn test_adm_burn_event_emitted() {
 
     // Only run if adm_burn exists and a token is available
     // This test verifies event structure when adm_burn is called
-    let events_before = count_events(&env);
     // Trigger a state change that emits adm_burn if token exists
     // Since we cannot create tokens without the full stellar asset setup,
     // we verify the event module is correctly wired by checking pause event
     client.pause(&admin);
     let events_after = count_events(&env);
-    assert!(events_after > events_before, "state change must emit at least one event");
+    assert!(events_after > 0, "state change must emit at least one event");
 }
 
 // ── Single Event Count Verification ──────────────────────────────────────
@@ -297,11 +349,10 @@ fn test_transfer_admin_emits_exactly_one_event() {
     let (client, admin, _) = setup_factory(&env);
     let new_admin = Address::generate(&env);
 
-    let before = count_events(&env);
     client.transfer_admin(&admin, &new_admin);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "transfer_admin must emit exactly one event");
+    assert_eq!(after, 1, "transfer_admin must emit exactly one event");
 }
 
 #[test]
@@ -310,24 +361,29 @@ fn test_pause_emits_exactly_one_event() {
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
-    let before = count_events(&env);
     client.pause(&admin);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "pause must emit exactly one event");
+    assert_eq!(after, 1, "pause must emit exactly one event");
 }
 
 #[test]
-fn test_update_fees_emits_exactly_one_event() {
+fn test_propose_fee_update_emits_exactly_two_events() {
+    // propose_fee_update emits the generic `prop_cr` proposal-created event
+    // plus the dedicated `fe_pr_v1` FeeUpdateProposed event (#1385).
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
-    let before = count_events(&env);
-    client.update_fees(&admin, &Some(50_000_000), &None);
+    let now = env.ledger().timestamp();
+    let start = now + 10;
+    let end = start + 86_400;
+    let eta = end + 3_600;
+
+    client.propose_fee_update(&admin, &50_000_000, &20_000_000, &start, &end, &eta);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "update_fees must emit exactly one event");
+    assert_eq!(after, 2, "propose_fee_update must emit exactly two events");
 }
 
 // ── Schema Validation Tests ───────────────────────────────────────────────
@@ -345,7 +401,7 @@ fn test_init_v1_schema() {
     let client = TokenFactoryClient::new(&env, &contract_id);
     client.initialize(&admin, &treasury, &BASE_FEE, &METADATA_FEE);
     
-    let events = env.events().all();
+    let events = all_events(&env);
     assert_eq!(events.len(), 1, "initialize must emit exactly one event");
     
     let event = events.get(0).unwrap();
@@ -353,9 +409,8 @@ fn test_init_v1_schema() {
     // Validate topic structure
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "init_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("init_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("init_v1")),
         "Event name must be 'init_v1'"
     );
     
@@ -376,15 +431,14 @@ fn test_adm_xf_v1_schema() {
     
     client.transfer_admin(&admin, &new_admin);
     
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     
     // Validate topic structure
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "adm_xf_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("adm_xf_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("adm_xf_v1")),
         "Event name must be 'adm_xf_v1'"
     );
     
@@ -402,15 +456,14 @@ fn test_pause_v1_schema() {
     
     client.pause(&admin);
     
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     
     // Validate topic structure
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "pause_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("pause_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("pause_v1")),
         "Event name must be 'pause_v1'"
     );
     
@@ -428,15 +481,14 @@ fn test_unpaus_v1_schema() {
     client.pause(&admin);
     client.unpause(&admin);
     
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     
     // Validate topic structure
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "unpaus_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("unpaus_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("unpaus_v1")),
         "Event name must be 'unpaus_v1'"
     );
     
@@ -446,31 +498,32 @@ fn test_unpaus_v1_schema() {
 }
 
 #[test]
-fn test_fee_up_v1_schema() {
+fn test_fe_ex_v1_schema() {
+    // Fee changes now only happen via governance execution, which emits the
+    // dedicated `fe_ex_v1` (FeeUpdateExecuted) event in addition to the
+    // generic `fee_up_v2` event (#1385).
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
-    
+
     let new_base = 50_000_000i128;
     let new_meta = 20_000_000i128;
-    client.update_fees(&admin, &Some(new_base), &Some(new_meta));
-    
-    let events = env.events().all();
-    let event = events.get(events.len() - 1).unwrap();
-    
-    // Validate topic structure
-    let topics = &event.0;
-    assert_eq!(topics.len(), 1, "fee_up_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("fee_up_v1")),
-        "Event name must be 'fee_up_v1'"
-    );
-    
-    // Validate payload structure: (base_fee, metadata_fee)
-    let payload: (i128, i128) = soroban_sdk::FromVal::from_val(&env, &event.1);
-    assert_eq!(payload.0, new_base, "First payload element must be base_fee");
-    assert_eq!(payload.1, new_meta, "Second payload element must be metadata_fee");
+    run_fee_governance_flow(&env, &client, &admin, new_base, new_meta);
+
+    let events = all_events(&env);
+    let fe_ex_event = (0..events.len())
+        .map(|i| events.get(i).unwrap())
+        .find(|e| topic_is(&env, &e.0.get(0).unwrap(), symbol_short!("fe_ex_v1")))
+        .expect("fe_ex_v1 event must be emitted on execution");
+
+    // Topics: (event_name, proposal_id) — 2 topics
+    assert_eq!(fe_ex_event.0.len(), 2, "fe_ex_v1 must have exactly 2 topics");
+
+    // Payload: (executor, base_fee, metadata_fee)
+    let payload: (Address, i128, i128) = soroban_sdk::FromVal::from_val(&env, &fe_ex_event.1);
+    assert_eq!(payload.0, admin, "First payload element must be executor (proposer)");
+    assert_eq!(payload.1, new_base, "Second payload element must be base_fee");
+    assert_eq!(payload.2, new_meta, "Third payload element must be metadata_fee");
 }
 
 // ── Event Name Character Limit Tests ──────────────────────────────────────
@@ -478,7 +531,7 @@ fn test_fee_up_v1_schema() {
 #[test]
 fn test_all_event_names_within_limit() {
     // Verify all versioned event names are ≤ 10 characters (symbol_short! limit)
-    let event_names = vec![
+    let event_names = [
         "init_v1",    // 7 chars
         "tok_rg_v1",  // 9 chars
         "adm_xf_v1",  // 9 chars
@@ -527,11 +580,10 @@ fn test_commission_rate_updated_event_emitted() {
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
-    let before = count_events(&env);
     client.set_commission_rate(&admin, &500_u32);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "set_commission_rate must emit exactly one event");
+    assert_eq!(after, 1, "set_commission_rate must emit exactly one event");
 }
 
 #[test]
@@ -543,15 +595,14 @@ fn test_com_rt_v1_schema() {
     let rate_bps: u32 = 500;
     client.set_commission_rate(&admin, &rate_bps);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
 
     // Validate topic
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "com_rt_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("com_rt_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("com_rt_v1")),
         "Event name must be 'com_rt_v1'"
     );
 
@@ -569,7 +620,7 @@ fn test_commission_rate_updated_event_data_accuracy() {
 
     client.set_commission_rate(&admin, &1000_u32);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     let payload: (Address, u32) = soroban_sdk::FromVal::from_val(&env, &event.1);
     assert_eq!(payload.1, 1000_u32, "rate_bps must be 1000 in event payload");
@@ -583,15 +634,14 @@ fn test_treasury_policy_initialized_event_emitted() {
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
 
-    let before = count_events(&env);
     client.initialize_treasury_policy(&admin, &Some(100_000_000_i128), &true);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "initialize_treasury_policy must emit exactly one event");
+    assert_eq!(after, 1, "initialize_treasury_policy must emit exactly one event");
 }
 
 #[test]
-fn test_trs_ini_v1_schema() {
+fn test_trs_ini1_schema() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = setup_factory(&env);
@@ -600,16 +650,16 @@ fn test_trs_ini_v1_schema() {
     let allowlist_enabled = true;
     client.initialize_treasury_policy(&admin, &Some(daily_cap), &allowlist_enabled);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
 
     // Validate topic
     let topics = &event.0;
-    assert_eq!(topics.len(), 1, "trs_ini_v1 must have exactly 1 topic");
+    assert_eq!(topics.len(), 1, "trs_ini1 must have exactly 1 topic");
     assert_eq!(
         topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("trs_ini_v1")),
-        "Event name must be 'trs_ini_v1'"
+        soroban_sdk::Val::from(symbol_short!("trs_ini1")),
+        "Event name must be 'trs_ini1'"
     );
 
     // Validate payload: (daily_cap, allowlist_enabled)
@@ -626,7 +676,7 @@ fn test_treasury_policy_initialized_allowlist_disabled() {
 
     client.initialize_treasury_policy(&admin, &Some(50_000_000_i128), &false);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     let payload: (i128, bool) = soroban_sdk::FromVal::from_val(&env, &event.1);
     assert!(!payload.1, "allowlist_enabled must be false in event payload");
@@ -648,11 +698,10 @@ fn test_dynamic_quorum_configured_event_emitted() {
         window_size: 5,
     };
 
-    let before = count_events(&env);
     client.configure_dynamic_quorum(&admin, &config);
     let after = count_events(&env);
 
-    assert_eq!(after - before, 1, "configure_dynamic_quorum must emit exactly one event");
+    assert_eq!(after, 1, "configure_dynamic_quorum must emit exactly one event");
 }
 
 #[test]
@@ -670,15 +719,14 @@ fn test_dq_cfg_v1_schema() {
     };
     client.configure_dynamic_quorum(&admin, &config);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
 
     // Validate topic
     let topics = &event.0;
     assert_eq!(topics.len(), 1, "dq_cfg_v1 must have exactly 1 topic");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(symbol_short!("dq_cfg_v1")),
+    assert!(
+        topic_is(&env, &topics.get(0).unwrap(), symbol_short!("dq_cfg_v1")),
         "Event name must be 'dq_cfg_v1'"
     );
 
@@ -705,7 +753,7 @@ fn test_dynamic_quorum_configured_disabled() {
     };
     client.configure_dynamic_quorum(&admin, &config);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let event = events.get(events.len() - 1).unwrap();
     let payload: (Address, bool, u32, u32) = soroban_sdk::FromVal::from_val(&env, &event.1);
     assert!(!payload.1, "enabled must be false in event payload");
@@ -715,19 +763,19 @@ fn test_dynamic_quorum_configured_disabled() {
 
 #[test]
 fn test_new_event_names_within_limit() {
-    // Verify all new versioned event names are ≤ 10 characters
+    // Verify all new versioned event names are ≤ 9 characters (Soroban Symbol::short limit)
     let new_event_names = vec![
-        "role_gr_v1",  // 10 chars
-        "role_rv_v1",  // 10 chars
+        "role_gr1",  // 8 chars
+        "role_rv1",  // 8 chars
         "com_rt_v1",   // 9 chars
-        "trs_ini_v1",  // 10 chars
+        "trs_ini1",  // 8 chars
         "dq_cfg_v1",   // 9 chars
     ];
 
     for name in new_event_names {
         assert!(
-            name.len() <= 10,
-            "Event name '{}' exceeds 10-character limit (length: {})",
+            name.len() <= 9,
+            "Event name '{}' exceeds 9-character limit (length: {})",
             name,
             name.len()
         );
@@ -737,10 +785,10 @@ fn test_new_event_names_within_limit() {
 #[test]
 fn test_new_versioned_event_names_compile() {
     let _env = Env::default();
-    let _ = symbol_short!("role_gr_v1");
-    let _ = symbol_short!("role_rv_v1");
+    let _ = symbol_short!("role_gr1");
+    let _ = symbol_short!("role_rv1");
     let _ = symbol_short!("com_rt_v1");
-    let _ = symbol_short!("trs_ini_v1");
+    let _ = symbol_short!("trs_ini1");
     let _ = symbol_short!("dq_cfg_v1");
     assert!(true, "All new versioned event names compile successfully");
 }

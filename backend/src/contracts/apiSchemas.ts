@@ -41,12 +41,20 @@ export interface TokenRecord {
 }
 
 export interface TokenPagination {
+  /** @deprecated offset-based page number — prefer `cursor`/`nextCursor` */
   page: number;
   limit: number;
   total: number;
+  /** @deprecated offset-based page count — prefer `hasMore` */
   totalPages: number;
+  /** @deprecated prefer `hasMore` */
   hasNext: boolean;
+  /** @deprecated offset-based pagination is deprecated */
   hasPrev: boolean;
+  /** Opaque keyset cursor for the next page; `null` when there are no more results. */
+  nextCursor: string | null;
+  /** Whether another page is available via `nextCursor`. */
+  hasMore: boolean;
 }
 
 export interface TokenFilters {
@@ -59,6 +67,8 @@ export interface TokenFilters {
   hasBurns?: string;
   sortBy: "created" | "burned" | "supply" | "name";
   sortOrder: "asc" | "desc";
+  /** Echoes back the `cursor` query param when one was supplied. */
+  cursor?: string;
 }
 
 export interface TokenSearchResponse {

@@ -10,10 +10,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { StellarService } from '../../services/stellar.service';
 import { TreasuryPolicyCard } from './TreasuryPolicyCard';
 import { TimelockConfigCard } from './TimelockConfigCard';
+import { IPFSPinMonitor } from './IPFSPinMonitor';
 import type { AdminPanelLoadState, AdminPanelState } from '../../types/admin';
 
 interface Props {
   network?: 'testnet' | 'mainnet';
+  /** Connected wallet address — used for role guard */
+  walletAddress?: string;
   /** Called when the user clicks a privileged action button — caller handles auth/confirmation */
   onPrivilegedAction?: (action: 'transfer_admin' | 'withdraw_fees' | 'execute_change' | 'cancel_change') => void;
 }
@@ -146,7 +149,7 @@ function LoadingPanel() {
   );
 }
 
-export function FactoryAdminPanel({ network = 'testnet', onPrivilegedAction }: Props) {
+export function FactoryAdminPanel({ network = 'testnet', walletAddress, onPrivilegedAction }: Props) {
   const [loadState, setLoadState] = useState<AdminPanelLoadState>({ status: 'idle' });
 
   const load = useCallback(async () => {
@@ -188,6 +191,17 @@ export function FactoryAdminPanel({ network = 'testnet', onPrivilegedAction }: P
 
   return (
     <div className="space-y-6">
+      {/* Role guard: only render for the contract admin */}
+      {loadState.status === 'loaded' && walletAddress &&
+        walletAddress !== loadState.data.adminState.admin && (
+        <div role="alert" className="rounded-lg border border-red-300 bg-red-50 px-5 py-4">
+          <p className="text-sm font-semibold text-red-800">Not authorized</p>
+          <p className="text-xs text-red-600 mt-1">
+            Only the contract admin ({loadState.data.adminState.admin}) can access this panel.
+          </p>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -272,6 +286,11 @@ export function FactoryAdminPanel({ network = 'testnet', onPrivilegedAction }: P
               />
             </div>
           )}
+
+          {/* IPFS pin monitor — backend-backed section, independent of on-chain load state */}
+          <div className="md:col-span-2">
+            <IPFSPinMonitor />
+          </div>
         </div>
       )}
     </div>

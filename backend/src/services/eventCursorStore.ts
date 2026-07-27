@@ -3,62 +3,20 @@ import { PrismaClient } from "@prisma/client";
 const CURSOR_KEY = "stellar_event_cursor";
 
 /**
+ * Key used to store the last processed ledger sequence for governance event catchup.
+ * Stored separately from the Stellar paging cursor so governance replay is independent
+ * of the general event stream position.
+ */
+export const GOVERNANCE_LEDGER_CURSOR_KEY = "governance_last_ledger";
+
+/**
  * Durable cursor store backed by Prisma IntegrationState.
- * 
- * **Issue #1156: Persist Stellar event subscription cursor for gap-free resume**
- * 
- * This implementation provides gap-free event stream resumption after service restarts,
- * crashes, or deployments by persisting the last processed cursor to the database.
  *
- * ## Semantics: At-Least-Once Delivery
- * 
- * This implementation provides **at-least-once** semantics:
- * - Events are processed BEFORE cursor is saved
- * - If process crashes after processing but before save, event may be replayed
- * - Downstream handlers MUST be idempotent (deduplicate by txHash/ledger)
- * - This is safer than at-most-once (losing events) for financial data
- * 
- * ## Replay Strategy
- * 
- * **First Boot (no persisted cursor):**
- * - Checks for STELLAR_CURSOR_ORIGIN environment variable
- * - If set, starts from that cursor (for historical replay)
- * - If not set, returns null → Horizon starts from "now" (skip history)
- * - Only new events are ingested (no historical backfill by default)
- * 
- * **Restart (cursor exists):**
- * - Loads persisted cursor from database
- * - Passes cursor to Horizon API as `cursor` parameter
- * - Horizon returns events AFTER that cursor
- * - Resumes exactly where processing stopped
- * - No gaps, no duplicates (beyond at-least-once guarantee)
- * 
- * ## Cursor Format
- * 
- * Cursors are opaque paging tokens from Horizon API:
- * - Format: "12345-67890" (ledger-sequence based)
- * - Monotonically increasing (newer events have higher cursors)
- * - Cursor points to a specific event position in ledger history
- * 
- * ## Atomicity & Safety
- * 
- * - Uses Prisma upsert for atomic cursor updates
- * - Single row per cursor key (stellar_event_cursor)
- * - Concurrent saves are serialized by database transaction
- * - Idempotent saves (same cursor written multiple times is safe)
- * 
- * ## Testing
- * 
- * See `__tests__/stellarEventListener.cursor.test.ts` for:
- * - C1: Cursor persistence and reload
- * - C2: Resume after simulated restart
- * - C3: Idempotent saves
- * - C4: Cursor monotonicity
- * - C5: Concurrent updates
- * - C6: Environment variable precedence
- * - C7: Atomic updates
- * - C8: Edge case handling
- * - P1-P3: Property-based tests
+ * Provides gap-free event stream resumption after restarts by persisting the
+ * last processed paging_token to the database.
+ *
+ * Cursor format: "<ledger>-<seq>" (e.g. "1234567-1").
+ * Ledger number is extracted for lag calculations.
  */
 export class EventCursorStore {
   constructor(private readonly prisma: PrismaClient) {}
@@ -77,4 +35,29 @@ export class EventCursorStore {
       update: { value: cursor },
     });
   }
+
+  /**
+   * Return how many ledgers behind the stored cursor is relative to
+   * `currentLedger`.  Returns null when no cursor is persisted.
+   *
+   * Cursor format is "<ledger>-<seq>" — we parse the numeric prefix.
+   */
+  async getCursorLag(currentLedger: number): Promise<number | null> {
+    const cursor = await this.load();
+    if (!cursor) return null;
+    const ledger = parseLedgerFromCursor(cursor);
+    if (ledger === null) return null;
+    return Math.max(0, currentLedger - ledger);
+  }
+}
+
+/**
+ * Extract the ledger sequence number from a Horizon paging_token.
+ * Returns null if the cursor does not match the expected "<ledger>-<seq>" format.
+ */
+export function parseLedgerFromCursor(cursor: string): number | null {
+  const match = cursor.match(/^(\d+)-\d+$/);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : null;
 }

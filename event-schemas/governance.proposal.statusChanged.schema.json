@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/governance.proposal.statusChanged.schema.json",
+  "title": "GovernanceProposalStatusChangedEvent",
+  "description": "Published when a governance proposal's status transitions. Consumed by the GraphQL `proposalStatusChanged` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.proposalStatusChanged).",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "governance.proposal.statusChanged",
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Schema version for this event type. Bump on breaking changes."
+    },
+    "creatorAddress": {
+      "type": "string",
+      "description": "Owning token's creator address, used for tenant scoping (TenantScopedPayload)."
+    },
+    "proposalId": {
+      "type": "integer"
+    },
+    "tokenAddress": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "previousStatus": {
+      "type": ["string", "null"]
+    },
+    "txHash": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "creatorAddress",
+    "proposalId",
+    "tokenAddress",
+    "status",
+    "txHash",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

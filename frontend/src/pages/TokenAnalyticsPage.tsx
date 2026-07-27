@@ -1,4 +1,7 @@
+import { useState, useMemo } from 'react';
 import { useTokenAnalytics } from '../hooks/useTokenAnalytics';
+import { TimeRangeSelector, type TimeRange, type TimeRangePreset } from '../components/TokenAnalytics/TimeRangeSelector';
+import { GranularityToggle, type Granularity } from '../components/TokenAnalytics/GranularityToggle';
 import { SupplyChart, BurnRateChart, ActivityFeed } from '../components/TokenAnalytics';
 import { Spinner } from '../components/UI/Spinner';
 import { Button } from '../components/UI/Button';
@@ -20,9 +23,55 @@ function KpiCard({ label, value, sub }: { label: string; value: string; sub?: st
   );
 }
 
+function getQueryParams() {
+  const params = new URL(window.location).searchParams;
+  return {
+    timeRangePreset: (params.get('timeRange') as TimeRangePreset) || '7d',
+    timeRangeStart: params.get('startDate'),
+    timeRangeEnd: params.get('endDate'),
+    granularity: (params.get('granularity') as Granularity) || 'daily',
+  };
+}
+
+function updateQueryParams(timeRange: TimeRange, granularity: Granularity) {
+  const url = new URL(window.location);
+  
+  if (timeRange.preset === 'custom') {
+    url.searchParams.set('timeRange', 'custom');
+    if (timeRange.startDate) url.searchParams.set('startDate', timeRange.startDate);
+    if (timeRange.endDate) url.searchParams.set('endDate', timeRange.endDate);
+  } else {
+    url.searchParams.set('timeRange', timeRange.preset);
+    url.searchParams.delete('startDate');
+    url.searchParams.delete('endDate');
+  }
+  
+  url.searchParams.set('granularity', granularity);
+  window.history.replaceState(null, '', url.toString());
+}
+
 export default function TokenAnalyticsPage({ address }: Props) {
+  const query = useMemo(getQueryParams, []);
+  
+  const [timeRange, setTimeRange] = useState<TimeRange>({
+    preset: query.timeRangePreset,
+    startDate: query.timeRangeStart || undefined,
+    endDate: query.timeRangeEnd || undefined,
+  });
+  const [granularity, setGranularity] = useState<Granularity>(query.granularity);
+
   const { stats, burnRecords, dailyBurns, supplyHistory, loading, error, refresh } =
-    useTokenAnalytics(address);
+    useTokenAnalytics(address, timeRange, granularity);
+
+  const handleTimeRangeChange = (newTimeRange: TimeRange) => {
+    setTimeRange(newTimeRange);
+    updateQueryParams(newTimeRange, granularity);
+  };
+
+  const handleGranularityChange = (newGranularity: Granularity) => {
+    setGranularity(newGranularity);
+    updateQueryParams(timeRange, newGranularity);
+  };
 
   if (loading && !stats) {
     return (
@@ -52,7 +101,7 @@ export default function TokenAnalyticsPage({ address }: Props) {
   const symbol = stats?.symbol ?? '—';
 
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+    <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
       {/* Header */}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -67,6 +116,12 @@ export default function TokenAnalyticsPage({ address }: Props) {
           Refresh
         </Button>
       </header>
+
+      {/* Controls */}
+      <section aria-label="Analytics controls" className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <TimeRangeSelector value={timeRange} onChange={handleTimeRangeChange} />
+        <GranularityToggle value={granularity} onChange={handleGranularityChange} />
+      </section>
 
       {/* KPI cards */}
       <section

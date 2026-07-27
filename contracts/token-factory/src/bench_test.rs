@@ -202,39 +202,128 @@ fn bench_get_nonexistent_token() {
 // are implemented in lib.rs (see ignored tests in test.rs).
 // ---------------------------------------------------------------------------
 
-/// Benchmark placeholder: `create_token()`
+/// Benchmark: `create_token()`
 ///
-/// Will measure token deployment cost including sub-contract instantiation,
+/// Measures token deployment cost including token creation,
 /// fee validation, and registry storage writes.
 #[test]
-#[ignore]
 fn bench_create_token() {
-    // TODO: enable once create_token() is implemented
-    // Expected metrics to capture:
-    //   - CPU instructions: token sub-contract deploy + storage writes
-    //   - Memory bytes: TokenInfo struct + registry entry
-    unimplemented!("create_token() not yet implemented in lib.rs")
+    let setup = BenchSetup::new();
+    let contract_id = setup.env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&setup.env, &contract_id);
+    client.initialize(&setup.admin, &setup.treasury, &70_000_000, &30_000_000);
+
+    let creator = Address::generate(&setup.env);
+    setup.env.mock_all_auths();
+
+    let (cpu, mem) = measure(&setup.env, || {
+        let _ = client.create_token(
+            &creator,
+            &String::from_str(&setup.env, "TestToken"),
+            &String::from_str(&setup.env, "TEST"),
+            &7u32,
+            &1_000_000_000i128,
+            &None,
+            &70_000_000i128,
+        );
+    });
+
+    println!("[bench_create_token] cpu_instructions={cpu}, memory_bytes={mem}");
+
+    assert!(
+        cpu > 0,
+        "CPU cost for create_token should be non-zero"
+    );
+    assert!(
+        mem > 0,
+        "Memory cost for create_token should be non-zero"
+    );
 }
 
-/// Benchmark placeholder: `mint_tokens()`
+/// Benchmark: `mint()`
 ///
-/// Will measure admin-controlled minting including authorization check
-/// and token balance update.
+/// Measures admin-controlled minting including authorization check
+/// and token balance update. Note: this benchmark requires a pre-existing token.
 #[test]
-#[ignore]
 fn bench_mint_tokens() {
-    // TODO: enable once mint_tokens() is implemented
-    unimplemented!("mint_tokens() not yet implemented in lib.rs")
+    let setup = BenchSetup::new();
+    let contract_id = setup.env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&setup.env, &contract_id);
+    client.initialize(&setup.admin, &setup.treasury, &70_000_000, &30_000_000);
+
+    let creator = Address::generate(&setup.env);
+    setup.env.mock_all_auths();
+
+    // Create a token first
+    let _ = client.create_token(
+        &creator,
+        &String::from_str(&setup.env, "MintTest"),
+        &String::from_str(&setup.env, "MINT"),
+        &7u32,
+        &0i128,
+        &None,
+        &70_000_000i128,
+    );
+
+    let mint_target = Address::generate(&setup.env);
+
+    let (cpu, mem) = measure(&setup.env, || {
+        let _ = client.mint(&creator, &0u32, &mint_target, &1_000_000i128);
+    });
+
+    println!("[bench_mint_tokens] cpu_instructions={cpu}, memory_bytes={mem}");
+
+    assert!(
+        cpu > 0,
+        "CPU cost for mint should be non-zero"
+    );
+    assert!(
+        mem > 0,
+        "Memory cost for mint should be non-zero"
+    );
 }
 
-/// Benchmark placeholder: `set_metadata()`
+/// Benchmark: `set_metadata()`
 ///
-/// Will measure IPFS URI storage write including duplicate-check guard.
+/// Measures IPFS URI storage write including duplicate-check guard.
+/// Note: this benchmark requires a pre-existing token with no metadata.
 #[test]
-#[ignore]
 fn bench_set_metadata() {
-    // TODO: enable once set_metadata() is implemented
-    unimplemented!("set_metadata() not yet implemented in lib.rs")
+    let setup = BenchSetup::new();
+    let contract_id = setup.env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&setup.env, &contract_id);
+    client.initialize(&setup.admin, &setup.treasury, &70_000_000, &30_000_000);
+
+    let creator = Address::generate(&setup.env);
+    setup.env.mock_all_auths();
+
+    // Create a token without metadata
+    let _ = client.create_token(
+        &creator,
+        &String::from_str(&setup.env, "MetadataTest"),
+        &String::from_str(&setup.env, "META"),
+        &7u32,
+        &1_000_000i128,
+        &None,
+        &70_000_000i128,
+    );
+
+    let metadata_uri = String::from_str(&setup.env, "ipfs://QmTestHash123456789");
+
+    let (cpu, mem) = measure(&setup.env, || {
+        let _ = client.set_metadata(&0u32, &metadata_uri);
+    });
+
+    println!("[bench_set_metadata] cpu_instructions={cpu}, memory_bytes={mem}");
+
+    assert!(
+        cpu > 0,
+        "CPU cost for set_metadata should be non-zero"
+    );
+    assert!(
+        mem > 0,
+        "Memory cost for set_metadata should be non-zero"
+    );
 }
 
 // ---------------------------------------------------------------------------

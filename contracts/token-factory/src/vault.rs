@@ -8,6 +8,76 @@ use crate::{
 };
 use soroban_sdk::{symbol_short, Address, Env};
 
+// ── Circuit breaker public API ────────────────────────────────────────────────
+
+/// Set the per-epoch withdrawal limit (admin only).
+/// Pass `0` to disable the limit.
+pub fn set_vault_withdraw_limit(env: &Env, admin: &Address, limit: i128) -> Result<(), Error> {
+    admin.require_auth();
+    let current_admin = storage::get_admin(env);
+    if *admin != current_admin {
+        return Err(Error::Unauthorized);
+    }
+    if limit < 0 {
+        return Err(Error::InvalidParameters);
+    }
+    storage::set_vault_withdraw_limit(env, limit);
+    Ok(())
+}
+
+/// Manually resume vault withdrawals after a circuit breaker trigger (admin only).
+pub fn resume_vault(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let current_admin = storage::get_admin(env);
+    if *admin != current_admin {
+        return Err(Error::Unauthorized);
+    }
+    storage::set_vault_circuit_breaker_paused(env, false);
+    env.events().publish(
+        (symbol_short!("vlt_rsm"), symbol_short!("v1")),
+        admin.clone(),
+    );
+    Ok(())
+}
+
+/// Reject the call if the per-epoch circuit breaker has paused withdrawals.
+///
+/// Shared by both the module-level `claim_vault` and the contract's
+/// `claim_vault` entry point so the protection is enforced on every
+/// withdrawal path.
+pub fn ensure_withdrawals_enabled(env: &Env) -> Result<(), Error> {
+    if storage::get_vault_circuit_breaker_paused(env) {
+        return Err(Error::VaultCircuitBreakerActive);
+    }
+    Ok(())
+}
+
+/// Record a withdrawal of `amount` against the current epoch's cumulative
+/// volume and trip the circuit breaker if the configured per-epoch limit is
+/// reached.
+///
+/// When the limit is set to `0` the breaker is disabled and withdrawals are
+/// never capped. The epoch counter is keyed by epoch number, so volume resets
+/// automatically at each epoch boundary.
+pub fn record_withdrawal(env: &Env, amount: i128) -> Result<(), Error> {
+    let limit = storage::get_vault_withdraw_limit(env);
+    if limit > 0 {
+        let epoch = storage::current_epoch(env);
+        let new_volume = storage::get_epoch_withdraw_volume(env, epoch)
+            .checked_add(amount)
+            .ok_or(Error::ArithmeticError)?;
+        storage::set_epoch_withdraw_volume(env, epoch, new_volume);
+        if new_volume >= limit {
+            storage::set_vault_circuit_breaker_paused(env, true);
+            env.events().publish(
+                (symbol_short!("vlt_cb"), symbol_short!("v1")),
+                (epoch, new_volume, limit),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Fund a vault with tokens.
 ///
 /// Safety checks:
@@ -107,6 +177,10 @@ pub fn claim_vault(
         return Err(Error::MilestoneUnauthorized);
     }
 
+    // ── Circuit breaker ───────────────────────────────────────────────────────
+    // Reject if withdrawals are paused by a previous circuit breaker trigger.
+    ensure_withdrawals_enabled(env)?;
+
     // Calculate claimable amount
     let claimable = vault.total_amount
         .checked_sub(vault.claimed_amount)
@@ -116,6 +190,10 @@ pub fn claim_vault(
     if claimable <= 0 {
         return Err(Error::NothingToClaim);
     }
+
+    // Track this withdrawal against the per-epoch limit and trip the breaker
+    // if the cumulative volume reaches the configured cap.
+    record_withdrawal(env, claimable)?;
 
     // Update claimed amount with checked arithmetic
     vault.claimed_amount = vault.claimed_amount
@@ -278,7 +356,6 @@ mod tests {
         assert_eq!(event_funder, funder);
         assert_eq!(event_amount, amount);
     }
-}
 
     // ============================================================================
     // Claim Vault Tests

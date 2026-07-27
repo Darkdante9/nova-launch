@@ -266,3 +266,63 @@ export class CampaignProjectionService {
 }
 
 export const campaignProjectionService = new CampaignProjectionService();
+
+export interface BufferedEvent<T> {
+  ledger: number;
+  payload: T;
+}
+
+export class EventBuffer<T> {
+  private buffer: BufferedEvent<T>[] = [];
+  private lastProcessedLedger = -1;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly processEvent: (event: BufferedEvent<T>) => Promise<void>,
+    private readonly flushTimeoutMs = 10_000,
+    private readonly onReorder?: (metric: string) => void
+  ) {}
+
+  async ingest(event: BufferedEvent<T>): Promise<void> {
+    this.resetTimer();
+
+    if (event.ledger === this.lastProcessedLedger + 1 && this.buffer.length === 0) {
+      this.lastProcessedLedger = event.ledger;
+      await this.processEvent(event);
+      return;
+    }
+
+    if (event.ledger <= this.lastProcessedLedger) {
+      this.onReorder?.("campaign.event_reordered");
+    }
+
+    this.buffer.push(event);
+    this.buffer.sort((a, b) => a.ledger - b.ledger);
+    await this.drainBuffer();
+  }
+
+  private async drainBuffer(): Promise<void> {
+    while (this.buffer.length > 0 && this.buffer[0].ledger === this.lastProcessedLedger + 1) {
+      const next = this.buffer.shift()!;
+      this.lastProcessedLedger = next.ledger;
+      await this.processEvent(next);
+    }
+  }
+
+  private resetTimer(): void {
+    if (this.flushTimer !== null) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => this.flush(), this.flushTimeoutMs);
+  }
+
+  async flush(): Promise<void> {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    while (this.buffer.length > 0) {
+      const next = this.buffer.shift()!;
+      this.lastProcessedLedger = next.ledger;
+      await this.processEvent(next);
+    }
+  }
+}

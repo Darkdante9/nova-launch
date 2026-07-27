@@ -19,6 +19,10 @@ function getStoredNetwork(): Network {
 export function useNetwork() {
     const [network, setNetworkState] = useState<Network>(getStoredNetwork);
     const [isChanging, setIsChanging] = useState(false);
+    // Latest Stellar ledger sequence this client has observed. There's no
+    // background poller (yet) — callers that learn the current ledger from a
+    // transaction response or Horizon call feed it back via setLedgerSequence.
+    const [ledgerSequence, setLedgerSequence] = useState<number | null>(null);
 
     useEffect(() => {
         try {
@@ -45,5 +49,7 @@ export function useNetwork() {
         isTestnet: network === 'testnet',
         isMainnet: network === 'mainnet',
         isChanging,
+        ledgerSequence,
+        setLedgerSequence,
     };
 }

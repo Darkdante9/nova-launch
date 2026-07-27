@@ -88,7 +88,9 @@ export function isValidSlippage(slippage: number): boolean {
     Number.isFinite(slippage) &&
     slippage >= CAMPAIGN_CONSTRAINTS.slippage.min &&
     slippage <= CAMPAIGN_CONSTRAINTS.slippage.max &&
-    slippage % 0.01 === 0 // Allow up to 2 decimal places
+    // `% 0.01 === 0` is unreliable for floats (e.g. 1 % 0.01 !== 0), so
+    // check that rounding to 2 decimal places doesn't change the value.
+    Math.abs(Math.round(slippage * 100) - slippage * 100) < 1e-9
   );
 }
 

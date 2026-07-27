@@ -14,11 +14,31 @@ export interface PaginatedResult<T> {
   total?: number;
 }
 
+/**
+ * Composite keyset cursor position used for stable `createdAt`+`id` ordered
+ * pagination (so two rows with an identical `createdAt` never collide/skip).
+ */
+export interface CreatedAtCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface CreatedAtPaginationParams {
+  cursor?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export class CursorPagination {
   private static readonly DEFAULT_LIMIT = 20;
   private static readonly MAX_LIMIT = 100;
 
-  static encodeCursor(value: string | number): string {
+  static encodeCursor(value: string | number): string;
+  static encodeCursor(value: CreatedAtCursor): string;
+  static encodeCursor(value: string | number | CreatedAtCursor): string {
+    if (typeof value === 'object' && value !== null) {
+      return Buffer.from(JSON.stringify(value)).toString('base64');
+    }
     return Buffer.from(String(value)).toString('base64');
   }
 
@@ -28,6 +48,33 @@ export class CursorPagination {
     } catch {
       throw new Error('Invalid cursor format');
     }
+  }
+
+  /**
+   * Decodes a composite `createdAt`+`id` keyset cursor produced by
+   * {@link encodeCursor} (object form). Throws on malformed input so callers
+   * can surface a 400 to the client instead of silently mis-paginating.
+   */
+  static decodeCreatedAtCursor(cursor: string): CreatedAtCursor {
+    const decoded = this.decodeCursor(cursor);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(decoded);
+    } catch {
+      throw new Error('Invalid cursor format');
+    }
+
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof (parsed as CreatedAtCursor).createdAt !== 'string' ||
+      typeof (parsed as CreatedAtCursor).id !== 'string' ||
+      Number.isNaN(Date.parse((parsed as CreatedAtCursor).createdAt))
+    ) {
+      throw new Error('Invalid cursor format');
+    }
+
+    return parsed as CreatedAtCursor;
   }
 
   static validateLimit(limit?: number): number {
@@ -118,6 +165,67 @@ export class CursorPagination {
       nextCursor,
       prevCursor,
       hasMore,
+    };
+  }
+
+  /**
+   * Keyset-paginates `items` by a stable `(createdAt desc, id asc)` order
+   * using an opaque cursor that encodes the last-seen `(createdAt, id)`
+   * pair. Unlike {@link paginate} (which locates a row by `id` alone and can
+   * collide when several rows share the same `createdAt`), this compares the
+   * full tuple so ties are resolved deterministically.
+   *
+   * Falls back to plain offset-based slicing of the same sorted list when no
+   * `cursor` is supplied but an `offset` is (deprecated, kept for backward
+   * compatibility with existing offset-based clients).
+   */
+  static paginateByCreatedAt<T extends { id: string | number; createdAt: Date | string }>(
+    items: T[],
+    params: CreatedAtPaginationParams
+  ): PaginatedResult<T> {
+    const limit = this.validateLimit(params.limit);
+
+    const sorted = [...items].sort((a, b) => {
+      const timeDiff =
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0;
+    });
+
+    let startIndex = 0;
+
+    if (params.cursor) {
+      const { createdAt, id } = this.decodeCreatedAtCursor(params.cursor);
+      const cursorTime = new Date(createdAt).getTime();
+      // First index strictly "after" the cursor position in (createdAt desc, id asc) order.
+      startIndex = sorted.findIndex((item) => {
+        const itemTime = new Date(item.createdAt).getTime();
+        if (itemTime !== cursorTime) return itemTime < cursorTime;
+        return String(item.id) > id;
+      });
+      if (startIndex === -1) startIndex = sorted.length;
+    } else if (params.offset !== undefined && params.offset > 0) {
+      // Deprecated offset fallback.
+      startIndex = params.offset;
+    }
+
+    const endIndex = startIndex + limit;
+    const paginatedItems = sorted.slice(startIndex, endIndex);
+    const hasMore = endIndex < sorted.length;
+
+    const lastItem = paginatedItems[paginatedItems.length - 1];
+    const nextCursor = hasMore && lastItem
+      ? this.encodeCursor({
+          createdAt: new Date(lastItem.createdAt).toISOString(),
+          id: String(lastItem.id),
+        })
+      : undefined;
+
+    return {
+      items: paginatedItems,
+      nextCursor,
+      hasMore,
+      total: sorted.length,
     };
   }
 }

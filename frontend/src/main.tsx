@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
 import { ErrorBoundary } from "./components/UI/ErrorBoundary";
+import { ErrorContextProvider } from "./providers/ErrorContextProvider";
 import { IntegrationBootError } from "./components/IntegrationBootError";
 import { initPWA } from "./services/pwa";
 import { setupGlobalErrorHandling } from "./utils/errors";
@@ -83,11 +84,13 @@ if (import.meta.env.PROD && bootErrors.length > 0) {
   checkCompatibility().then((compatInfo) => {
     root.render(
       <StrictMode>
-        <ErrorBoundary>
-          <ToastProvider>
-            <App compatibilityInfo={compatInfo} />
-          </ToastProvider>
-        </ErrorBoundary>
+        <ErrorContextProvider>
+          <ErrorBoundary>
+            <ToastProvider>
+              <App compatibilityInfo={compatInfo} />
+            </ToastProvider>
+          </ErrorBoundary>
+        </ErrorContextProvider>
       </StrictMode>
     );
   });

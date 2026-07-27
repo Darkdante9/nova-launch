@@ -1,14 +1,14 @@
 /**
  * TreasuryPolicyCard
- * Read-only display of treasury policy state: daily cap, withdrawn today,
- * remaining capacity, and the recipient allowlist.
- * No mutating actions — privileged operations are clearly separated.
+ * Read-only display of treasury policy state with editable daily cap wired
+ * to PUT /api/admin/treasury/policy.
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import type { TreasuryPolicy } from '../../types/admin';
 
 interface Props {
   policy: TreasuryPolicy;
+  onSave?: (policy: { dailyCap: string }) => Promise<void>;
 }
 
 function stroopsToXlm(stroops: bigint): string {
@@ -34,24 +34,87 @@ function CapacityBar({ used, total }: { used: bigint; total: bigint }) {
   );
 }
 
-export function TreasuryPolicyCard({ policy }: Props) {
+export function TreasuryPolicyCard({ policy, onSave }: Props) {
+  const [editing, setEditing] = useState(false);
+  const [dailyCap, setDailyCap] = useState(policy.dailyCap.toString());
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Fetch current policy from backend on mount
+  useEffect(() => {
+    fetch('/api/admin/treasury/policy', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('adminToken') ?? ''}` },
+    })
+      .then((r) => r.ok ? r.json() : null)
+      .then((body) => {
+        if (body?.data?.dailyCap) setDailyCap(body.data.dailyCap);
+      })
+      .catch(() => { /* fallback to prop values */ });
+  }, []);
+
+  const handleSave = async () => {
+    const prevCap = policy.dailyCap.toString();
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch('/api/admin/treasury/policy', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken') ?? ''}`,
+        },
+        body: JSON.stringify({ dailyCap }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      }
+      await onSave?.({ dailyCap });
+      setEditing(false);
+    } catch (err) {
+      setDailyCap(prevCap);
+      setSaveError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const displayCap = BigInt(dailyCap || '0');
+
   return (
     <div className="bg-white rounded-lg shadow-md border border-gray-200">
       <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-2">
         <span className="text-lg">🏦</span>
         <h3 className="text-lg font-semibold text-gray-900">Treasury Policy</h3>
-        <span className="ml-auto text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
-          Read-only
-        </span>
+        {editing ? (
+          <span className="ml-auto text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
+            Editing
+          </span>
+        ) : (
+          <span className="ml-auto text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
+            Read-only
+          </span>
+        )}
       </div>
 
       <div className="p-6 space-y-5">
         {/* Daily cap */}
         <div>
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Daily Cap</p>
-          <p className="text-xl font-mono font-semibold text-gray-900 mt-0.5">
-            {stroopsToXlm(policy.dailyCap)} XLM
-          </p>
+          {editing ? (
+            <input
+              type="text"
+              value={dailyCap}
+              onChange={(e) => /^\d*$/.test(e.target.value) && setDailyCap(e.target.value)}
+              className="mt-0.5 w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono"
+              aria-label="Daily cap in stroops"
+              placeholder="Stroops (integer)"
+            />
+          ) : (
+            <p className="text-xl font-mono font-semibold text-gray-900 mt-0.5">
+              {stroopsToXlm(displayCap)} XLM
+            </p>
+          )}
         </div>
 
         {/* Usage bar */}
@@ -59,13 +122,46 @@ export function TreasuryPolicyCard({ policy }: Props) {
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Today's Usage
           </p>
-          <CapacityBar used={policy.withdrawnToday} total={policy.dailyCap} />
+          <CapacityBar used={policy.withdrawnToday} total={displayCap} />
           <p className="text-sm text-gray-600 mt-2">
             <span className="font-medium text-green-700">
               {stroopsToXlm(policy.remainingCapacity)} XLM
             </span>{' '}
             remaining today
           </p>
+        </div>
+
+        {saveError && (
+          <p className="text-xs text-red-600" role="alert">{saveError}</p>
+        )}
+
+        {/* Edit/Save controls */}
+        <div className="flex gap-2">
+          {editing ? (
+            <>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="text-xs px-3 py-1.5 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 font-medium disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                onClick={() => { setEditing(false); setSaveError(null); setDailyCap(policy.dailyCap.toString()); }}
+                disabled={saving}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 font-medium disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setEditing(true)}
+              className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 font-medium"
+            >
+              Edit
+            </button>
+          )}
         </div>
 
         {/* Allowlist */}

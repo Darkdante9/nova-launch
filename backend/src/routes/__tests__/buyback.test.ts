@@ -2,30 +2,39 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import buybackRoutes from '../buyback';
-import { PrismaClient } from '@prisma/client';
+import { eventBus } from '../../services/eventBus';
 
-vi.mock('@prisma/client');
+// `PrismaClient` is instantiated directly in buyback.ts (`new PrismaClient()`),
+// so the mock factory must return the same shared instance every route call
+// resolves against — a bare `vi.mock('@prisma/client')` automock throws on
+// Prisma's generated runtime (Proxy-based enum exports aren't automockable).
+const mockPrisma = vi.hoisted(() => ({
+  buybackCampaign: {
+    create: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    count: vi.fn(),
+  },
+  buybackStep: {
+    update: vi.fn(),
+  },
+}));
+
+vi.mock('@prisma/client', () => ({
+  PrismaClient: vi.fn(() => mockPrisma),
+}));
+vi.mock('../../services/eventBus', () => ({
+  eventBus: { publish: vi.fn().mockResolvedValue(undefined) },
+}));
 
 const app = express();
 app.use(express.json());
 app.use('/api/buyback', buybackRoutes);
 
 describe('Buyback Routes Integration Tests', () => {
-  let mockPrisma: any;
-
   beforeEach(() => {
-    mockPrisma = {
-      buybackCampaign: {
-        create: vi.fn(),
-        findMany: vi.fn(),
-        findUnique: vi.fn(),
-        update: vi.fn(),
-        count: vi.fn(),
-      },
-      buybackStep: {
-        update: vi.fn(),
-      },
-    };
+    vi.clearAllMocks();
   });
 
   describe('POST /campaigns', () => {
@@ -224,6 +233,54 @@ describe('Buyback Routes Integration Tests', () => {
       expect(response.body.executedStep.status).toBe('COMPLETED');
     });
 
+    it('should publish a campaign.step_executed event on success', async () => {
+      const mockCampaign = {
+        id: 1,
+        currentStep: 1,
+        totalSteps: 3,
+        status: 'ACTIVE',
+        executedAmount: '2000',
+        steps: [
+          { id: 1, stepNumber: 0, amount: '2000', status: 'COMPLETED' },
+          { id: 2, stepNumber: 1, amount: '3000', status: 'PENDING' },
+          { id: 3, stepNumber: 2, amount: '5000', status: 'PENDING' },
+        ],
+      };
+
+      const executedAt = new Date('2026-06-23T00:00:00.000Z');
+      mockPrisma.buybackCampaign.findUnique.mockResolvedValue(mockCampaign);
+      mockPrisma.buybackStep.update.mockResolvedValue({
+        id: 2,
+        stepNumber: 1,
+        amount: '3000',
+        status: 'COMPLETED',
+        executedAt,
+        txHash: 'abc123',
+      });
+      mockPrisma.buybackCampaign.update.mockResolvedValue({
+        ...mockCampaign,
+        executedAmount: '5000',
+        currentStep: 2,
+      });
+
+      await request(app)
+        .post('/api/buyback/campaigns/1/execute-step')
+        .send({ txHash: 'abc123' })
+        .expect(200);
+
+      expect(eventBus.publish).toHaveBeenCalledWith('campaign.step_executed', {
+        campaignId: 1,
+        stepNumber: 1,
+        amount: '3000',
+        status: 'COMPLETED',
+        txHash: 'abc123',
+        executedAt: executedAt.toISOString(),
+        totalSteps: 3,
+        executedAmount: '5000',
+        campaignStatus: 'ACTIVE',
+      });
+    });
+
     it('should reject execution on inactive campaign', async () => {
       const mockCampaign = {
         id: 1,
@@ -277,7 +334,11 @@ describe('Buyback Routes Integration Tests', () => {
       mockPrisma.buybackCampaign.findUnique.mockResolvedValue(mockCampaign);
       mockPrisma.buybackStep.update.mockResolvedValue({
         id: 3,
+        stepNumber: 2,
+        amount: '5000',
         status: 'COMPLETED',
+        executedAt: new Date('2026-06-23T00:00:00.000Z'),
+        txHash: 'abc123',
       });
       mockPrisma.buybackCampaign.update.mockResolvedValue({
         ...mockCampaign,

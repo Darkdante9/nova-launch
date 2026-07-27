@@ -67,6 +67,46 @@ export function verifyWebhookSignature(
 }
 
 /**
+ * Verify a previously-generated webhook signature without the replay-window
+ * freshness check used by `verifyWebhookSignature`. Use this when verifying
+ * the signature of a historical delivery (e.g. for a delivery log viewer),
+ * where the signing timestamp is necessarily in the past.
+ */
+export function verifyStoredWebhookSignature(
+  payload: string,
+  header: string,
+  secret: string
+): boolean {
+  if (!header || !header.startsWith("v1.")) {
+    return false;
+  }
+
+  const parts = header.split(".");
+  if (parts.length !== 3) {
+    return false;
+  }
+
+  const timestamp = parseInt(parts[1], 10);
+  const signature = parts[2];
+
+  if (isNaN(timestamp)) {
+    return false;
+  }
+
+  const expectedHeader = generateWebhookSignature(payload, secret, timestamp);
+  const expectedSignature = expectedHeader.split(".")[2];
+
+  if (signature.length !== expectedSignature.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature)
+  );
+}
+
+/**
  * Validate URL format
  */
 export function isValidUrl(url: string): boolean {

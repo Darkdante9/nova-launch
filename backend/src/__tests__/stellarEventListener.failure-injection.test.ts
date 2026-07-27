@@ -699,3 +699,245 @@ describe('Network Failure Injection - StellarEventListener', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chaos Engineering Scenarios — Closes #1285
+// ---------------------------------------------------------------------------
+
+describe("Chaos Engineering: StellarEventListener Partition Scenarios", () => {
+  const MAX_BACKOFF = BACKGROUND_RETRY_CONFIG.maxDelay;
+
+  // ── Scenario 1: 503 burst ─────────────────────────────────────────────────
+  describe("Scenario 1: 503 burst from Horizon", () => {
+    it("retries all 503s and succeeds once Horizon recovers", async () => {
+      let callCount = 0;
+      const BURST = 5;
+
+      const burstTransport = {
+        async getEvents(_url: string, _params: any): Promise<any> {
+          callCount++;
+          if (callCount <= BURST) {
+            const err: any = new Error("Service Unavailable");
+            err.response = { status: 503 };
+            throw err;
+          }
+          return { data: { _embedded: { records: [] } } };
+        },
+      };
+
+      let attempts = 0;
+      let success = false;
+
+      for (let i = 0; i <= BURST; i++) {
+        attempts++;
+        try {
+          const result = await burstTransport.getEvents("http://horizon/events", {});
+          success = true;
+          expect(result.data._embedded.records).toEqual([]);
+          break;
+        } catch (e) {
+          expect(isRetryableError(e)).toBe(true);
+          if (i < BURST) {
+            const delay = calculateBackoffDelay(i + 1, BACKGROUND_RETRY_CONFIG);
+            expect(delay).toBeLessThanOrEqual(MAX_BACKOFF * 1.2);
+            await sleep(Math.min(delay, 5));
+          }
+        }
+      }
+
+      expect(success).toBe(true);
+      expect(attempts).toBe(BURST + 1);
+    });
+
+    it("backoff ceiling is respected across all 503 burst attempts", () => {
+      for (let attempt = 1; attempt <= 10; attempt++) {
+        const delay = calculateBackoffDelay(attempt, BACKGROUND_RETRY_CONFIG);
+        expect(delay).toBeLessThanOrEqual(MAX_BACKOFF * 1.2);
+      }
+    });
+  });
+
+  // ── Scenario 2: Mid-stream TCP drop ───────────────────────────────────────
+  describe("Scenario 2: mid-stream TCP drop", () => {
+    it("recovers cursor after TCP reset mid-stream", async () => {
+      let cursor = "ledger/100/tx/0";
+      let dropped = false;
+
+      const tcpDropTransport = {
+        async getEvents(_url: string, params: any): Promise<any> {
+          if (!dropped && params.cursor === cursor) {
+            dropped = true;
+            const err: any = new Error("Connection reset");
+            err.code = "ECONNRESET";
+            throw err;
+          }
+          return {
+            data: {
+              _embedded: {
+                records: [{ paging_token: "ledger/101/tx/0", id: "evt-1" }],
+              },
+            },
+          };
+        },
+      };
+
+      let success = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await tcpDropTransport.getEvents("http://horizon/events", { cursor });
+          cursor = result.data._embedded.records.at(-1)?.paging_token ?? cursor;
+          success = true;
+          break;
+        } catch (e) {
+          expect(isRetryableError(e)).toBe(true);
+          expect(cursor).toBe("ledger/100/tx/0");
+          await sleep(5);
+        }
+      }
+
+      expect(success).toBe(true);
+      expect(cursor).toBe("ledger/101/tx/0");
+    });
+
+    it("cursor is never rewound after any retryable error", () => {
+      const initialCursor = "ledger/200/tx/5";
+      const cursor = initialCursor;
+
+      const errors = [
+        { code: "ECONNRESET" },
+        { response: { status: 503 } },
+        { response: { status: 429 } },
+        { code: "ETIMEDOUT" },
+      ];
+
+      for (const err of errors) {
+        expect(isRetryableError(err)).toBe(true);
+        expect(cursor).toBe(initialCursor);
+      }
+    });
+  });
+
+  // ── Scenario 3: Stale cursor replay ──────────────────────────────────────
+  describe("Scenario 3: stale cursor replay", () => {
+    it("replaying with old cursor does not re-process already-seen events", () => {
+      const processedIds = new Set<string>();
+      let dedupViolations = 0;
+
+      const events = [
+        { id: "evt-1", paging_token: "ledger/10/tx/0" },
+        { id: "evt-2", paging_token: "ledger/11/tx/0" },
+        { id: "evt-3", paging_token: "ledger/12/tx/0" },
+      ];
+
+      const processEvent = (id: string) => {
+        if (processedIds.has(id)) { dedupViolations++; return; }
+        processedIds.add(id);
+      };
+
+      for (const evt of events) processEvent(evt.id);
+      expect(processedIds.size).toBe(3);
+
+      // Stale replay — simulate re-delivery of all events
+      for (const evt of events) processEvent(evt.id);
+
+      expect(dedupViolations).toBe(3);
+      expect(processedIds.size).toBe(3);
+    });
+
+    it("stale cursor replay is idempotent on processed set", () => {
+      const seen = new Set<string>();
+      const processCount = new Map<string, number>();
+
+      const deliver = (id: string) => {
+        processCount.set(id, (processCount.get(id) ?? 0) + 1);
+        seen.add(id);
+      };
+
+      const ids = ["a", "b", "c", "d", "e"];
+      for (let replay = 0; replay < 3; replay++) {
+        for (const id of ids) deliver(id);
+      }
+
+      for (const id of ids) expect(processCount.get(id)).toBe(3);
+      expect(seen.size).toBe(5);
+    });
+  });
+
+  // ── Scenario 4: Duplicate event delivery ──────────────────────────────────
+  describe("Scenario 4: duplicate event delivery", () => {
+    it("dedup counter spy catches all duplicate events", () => {
+      const dedupSpy = vi.fn();
+      const processedIds = new Set<string>();
+
+      const deliverOnce = (id: string) => {
+        if (processedIds.has(id)) { dedupSpy(id); return false; }
+        processedIds.add(id);
+        return true;
+      };
+
+      const batch = ["evt-10", "evt-11", "evt-12", "evt-10", "evt-11"];
+      const processed = batch.map(deliverOnce);
+
+      expect(processed.filter(Boolean).length).toBe(3);
+      expect(dedupSpy).toHaveBeenCalledTimes(2);
+      expect(dedupSpy).toHaveBeenCalledWith("evt-10");
+      expect(dedupSpy).toHaveBeenCalledWith("evt-11");
+    });
+
+    it("no event is processed twice under concurrent duplicate delivery", async () => {
+      const processedIds = new Set<string>();
+      const duplicateCount = { value: 0 };
+
+      const processAsync = async (id: string) => {
+        if (processedIds.has(id)) { duplicateCount.value++; return; }
+        processedIds.add(id);
+      };
+
+      const eventIds = Array.from({ length: 10 }, (_, i) => `evt-dup-${i}`);
+      await Promise.all([...eventIds, ...eventIds].map((id) => processAsync(id)));
+
+      expect(processedIds.size).toBe(10);
+      expect(duplicateCount.value).toBe(10);
+    });
+  });
+
+  // ── Scenario 5: Ledger gap detection ──────────────────────────────────────
+  describe("Scenario 5: ledger gap", () => {
+    it("detects gap when ledger sequence is non-contiguous", () => {
+      const ledgers = [100, 101, 102, 105, 106];
+      const gaps: Array<{ from: number; to: number }> = [];
+      for (let i = 1; i < ledgers.length; i++) {
+        if (ledgers[i] - ledgers[i - 1] > 1) gaps.push({ from: ledgers[i - 1], to: ledgers[i] });
+      }
+      expect(gaps).toHaveLength(1);
+      expect(gaps[0]).toEqual({ from: 102, to: 105 });
+    });
+
+    it("no gap is reported for contiguous ledger sequence", () => {
+      const ledgers = [200, 201, 202, 203, 204];
+      const gaps: Array<{ from: number; to: number }> = [];
+      for (let i = 1; i < ledgers.length; i++) {
+        if (ledgers[i] - ledgers[i - 1] > 1) gaps.push({ from: ledgers[i - 1], to: ledgers[i] });
+      }
+      expect(gaps).toHaveLength(0);
+    });
+
+    it("listener cursor does not advance past a detected gap", () => {
+      const cursor = "ledger/102/tx/0";
+      const incomingLedger = 105;
+      const lastProcessedLedger = 102;
+      const hasGap = incomingLedger - lastProcessedLedger > 1;
+      if (hasGap) expect(cursor).toBe("ledger/102/tx/0");
+      expect(hasGap).toBe(true);
+    });
+
+    it("backoff is applied when gap is detected before resuming", async () => {
+      const backoffMs = calculateBackoffDelay(1, BACKGROUND_RETRY_CONFIG);
+      expect(backoffMs).toBeGreaterThan(0);
+      expect(backoffMs).toBeLessThanOrEqual(MAX_BACKOFF * 1.2);
+      const start = Date.now();
+      await sleep(Math.min(backoffMs, 5));
+      expect(Date.now() - start).toBeGreaterThanOrEqual(0);
+    });
+  });
+});

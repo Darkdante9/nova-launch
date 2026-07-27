@@ -12,6 +12,9 @@ export const searchTokensSchema = z.object({
   maxSupply: z.string().regex(/^\d+$/).optional(),
   hasBurns: z.enum(["true", "false"]).optional(),
 
+  // Phonetic / fuzzy search
+  fuzzy: z.enum(["true", "false"]).optional(),
+
   // Sorting
   sortBy: z.enum(["created", "burned", "supply", "name"]).default("created"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),

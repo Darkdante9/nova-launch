@@ -11,7 +11,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { CircuitBreaker, CircuitBreakerOpenError, CircuitBreakerOptions } from "./circuitBreaker";
+import {
+  CircuitBreaker,
+  CircuitBreakerOpenError,
+  CircuitBreakerOptions,
+  registerCircuitBreaker,
+  getCircuitBreakerRegistrySnapshot,
+  __resetCircuitBreakerRegistryForTests,
+} from "./circuitBreaker";
 import { ErrorCode } from "./errors";
 
 describe("CircuitBreaker", () => {
@@ -282,5 +289,52 @@ describe("CircuitBreakerOpenError", () => {
   it("defaults message without service name", () => {
     const error = new CircuitBreakerOpenError();
     expect(error.message).toBe("Circuit breaker is open. Service may be unavailable.");
+  });
+});
+
+describe("circuit breaker registry", () => {
+  const registryTestOptions: CircuitBreakerOptions = {
+    failureThreshold: 3,
+    successThreshold: 2,
+    timeoutMs: 1000,
+  };
+
+  beforeEach(() => {
+    __resetCircuitBreakerRegistryForTests();
+  });
+
+  it("returns an empty snapshot when nothing is registered", () => {
+    expect(getCircuitBreakerRegistrySnapshot()).toEqual({});
+  });
+
+  it("exposes registered breakers' live metrics by service name", () => {
+    const pinataBreaker = new CircuitBreaker(registryTestOptions);
+    const sendgridBreaker = new CircuitBreaker(registryTestOptions);
+    registerCircuitBreaker("pinata", pinataBreaker);
+    registerCircuitBreaker("sendgrid", sendgridBreaker);
+
+    expect(Object.keys(getCircuitBreakerRegistrySnapshot()).sort()).toEqual(["pinata", "sendgrid"]);
+
+    pinataBreaker.execute(async () => { throw new Error("fail"); }).catch(() => {});
+  });
+
+  it("reflects state changes on the underlying breaker (snapshot is live, not a copy)", async () => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1, successThreshold: 1, timeoutMs: 1000 });
+    registerCircuitBreaker("flaky-service", breaker);
+
+    expect(getCircuitBreakerRegistrySnapshot()["flaky-service"].state).toBe("closed");
+
+    await expect(breaker.execute(async () => { throw new Error("fail"); })).rejects.toThrow("fail");
+
+    expect(getCircuitBreakerRegistrySnapshot()["flaky-service"].state).toBe("open");
+  });
+
+  it("re-registering under the same name replaces the previous entry", () => {
+    const first = new CircuitBreaker(registryTestOptions);
+    const second = new CircuitBreaker(registryTestOptions);
+    registerCircuitBreaker("svc", first);
+    registerCircuitBreaker("svc", second);
+
+    expect(getCircuitBreakerRegistrySnapshot()["svc"]).toEqual(second.getMetrics());
   });
 });

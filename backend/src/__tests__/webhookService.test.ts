@@ -77,6 +77,42 @@ describe("WebhookService", () => {
     });
   });
 
+  describe("getDeliveryLogById", () => {
+    it("should return a mapped delivery log when found", async () => {
+      const mockRow = {
+        id: "log-1",
+        subscription_id: "sub-1",
+        event: WebhookEventType.TOKEN_CREATED,
+        payload: { event: WebhookEventType.TOKEN_CREATED, timestamp: "t", data: {}, signature: "v1.1.abc" },
+        status_code: 200,
+        success: true,
+        attempts: 1,
+        last_attempt_at: new Date(),
+        error_message: null,
+        created_at: new Date(),
+      };
+
+      const db = await import("../database/db");
+      vi.mocked(db.default.query).mockResolvedValue({ rows: [mockRow] } as any);
+
+      const result = await service.getDeliveryLogById("log-1");
+
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe("log-1");
+      expect(result?.subscriptionId).toBe("sub-1");
+      expect(result?.payload.signature).toBe("v1.1.abc");
+    });
+
+    it("should return null when no delivery log matches", async () => {
+      const db = await import("../database/db");
+      vi.mocked(db.default.query).mockResolvedValue({ rows: [] } as any);
+
+      const result = await service.getDeliveryLogById("missing");
+
+      expect(result).toBeNull();
+    });
+  });
+
   describe("findMatchingSubscriptions", () => {
     it("should find subscriptions matching event and token", async () => {
       const event = WebhookEventType.TOKEN_BURN_SELF;

@@ -6,8 +6,10 @@ import {
   validateSubscriptionCreate,
   validateSubscriptionId,
   validateListSubscriptions,
+  validateDeliveryId,
 } from "../middleware/validation";
 import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLimiter";
+import { verifyStoredWebhookSignature } from "../utils/crypto";
 
 const router = Router();
 
@@ -232,6 +234,73 @@ router.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch delivery logs",
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/webhooks/deliveries/:id/verification
+ * Verify the HMAC signature recorded for a single delivery log entry.
+ *
+ * Recomputes the signature from the stored payload and the subscription's
+ * current secret, so operators can confirm a delivery was correctly signed
+ * without inspecting raw HTTP logs. Never returns the secret itself — only
+ * the last 8 characters, to help diagnose key-rotation mismatches.
+ */
+router.get(
+  "/deliveries/:id/verification",
+  validateDeliveryId,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+
+      const log = await webhookService.getDeliveryLogById(id);
+      if (!log) {
+        return res.status(404).json({
+          success: false,
+          error: "Delivery log not found",
+        });
+      }
+
+      const subscription = await webhookService.getSubscription(
+        log.subscriptionId
+      );
+      if (!subscription) {
+        return res.status(404).json({
+          success: false,
+          error: "Associated subscription not found",
+        });
+      }
+
+      // Reconstruct the exact object shape that was signed (event, timestamp,
+      // data, in that order) rather than spreading the stored payload — JSONB
+      // round-trips do not guarantee the original key order is preserved,
+      // and JSON.stringify output depends on key order.
+      const payloadString = JSON.stringify({
+        event: log.payload.event,
+        timestamp: log.payload.timestamp,
+        data: log.payload.data,
+      });
+      const verified = verifyStoredWebhookSignature(
+        payloadString,
+        log.payload.signature,
+        subscription.secret
+      );
+
+      res.json({
+        success: true,
+        data: {
+          verified,
+          keyId: subscription.secret.slice(-8),
+          algorithm: "HMAC-SHA256",
+        },
+      });
+    } catch (error) {
+      console.error("Error verifying delivery signature:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to verify delivery signature",
       });
     }
   }

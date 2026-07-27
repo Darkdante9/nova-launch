@@ -605,3 +605,48 @@ describe("registerChannel duplicate guard", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Circuit breaker integration
+// ---------------------------------------------------------------------------
+
+describe("SendGrid circuit breaker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setEnv({
+      SENDGRID_API_KEY: "SG.fake-key-for-tests",
+      NODE_ENV: "test",
+      MAX_RETRIES: "3",
+    });
+    delete process.env.NOTIFICATION_EMAIL_API_URL;
+  });
+  afterEach(restoreEnv);
+
+  it("opens after repeated exhausted deliveries and fails fast without calling the provider", async () => {
+    failAxios(500);
+    const svc = makeService();
+
+    // Each send exhausts 3 retries (failureThreshold for this breaker is 5).
+    // Use a distinct destination per call so the rate limiter doesn't
+    // suppress these as duplicate sends.
+    for (let i = 0; i < 5; i++) {
+      const result = await svc.send({
+        targets: [{ type: "EMAIL", destination: `user${i}@example.com` }],
+        payload: { message: "trip the breaker", subject: `event-${i}` },
+      });
+      expect(result[0].success).toBe(false);
+    }
+
+    expect(mockedPost).toHaveBeenCalledTimes(15); // 5 deliveries x 3 attempts each
+
+    // The 6th delivery should fail immediately — circuit is now open.
+    const result = await svc.send({
+      targets: [{ type: "EMAIL", destination: "user-after-trip@example.com" }],
+      payload: { message: "should not reach the provider", subject: "event-trip" },
+    });
+
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toContain("Circuit breaker is open");
+    expect(mockedPost).toHaveBeenCalledTimes(15); // unchanged — no new attempt was made
+  });
+});

@@ -328,6 +328,20 @@ export const eventsProcessedTotal = new Counter({
   registers: [register],
 });
 
+/**
+ * Counts occurrences of the `campaign.event_reordered` projection event —
+ * emitted whenever the campaign event buffer (see
+ * `services/campaignEventBuffer.ts`) detects that an incoming Stellar event
+ * arrived out of ledger order for its campaign stream and had to be held
+ * back / reordered before being applied to the projection.
+ */
+export const campaignEventReorderedTotal = new Counter({
+  name: "campaign_event_reordered_total",
+  help: "Total number of campaign projection events buffered due to out-of-order ledger delivery (campaign.event_reordered)",
+  labelNames: ["event_type", "reason"],
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Webhook Metrics
 // ---------------------------------------------------------------------------
@@ -369,6 +383,27 @@ export const webhookDeliveryLatency = new Histogram({
   help: "End-to-end latency from event trigger to final delivery outcome in seconds",
   labelNames: ["outcome", "attempt_count"],
   buckets: [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+});
+
+/**
+ * Configured concurrency of the webhook delivery worker pool
+ * (WEBHOOK_WORKER_CONCURRENCY). Reported as a gauge so it shows up
+ * alongside live queue depth even though it rarely changes at runtime.
+ */
+export const webhookDeliveryWorkerPoolSize = new Gauge({
+  name: "webhook_delivery_worker_pool_size",
+  help: "Configured concurrency of the webhook delivery worker pool",
+  registers: [register],
+});
+
+/**
+ * Number of webhook deliveries currently waiting for a free worker slot
+ * in the delivery pool (i.e. not yet dispatched).
+ */
+export const webhookDeliveryQueueDepth = new Gauge({
+  name: "webhook_delivery_queue_depth",
+  help: "Current number of queued webhook deliveries awaiting a free worker slot",
   registers: [register],
 });
 
@@ -449,6 +484,20 @@ export class IntegrationMetrics {
     status: "success" | "failure"
   ): void {
     eventsProcessedTotal.inc({ event_type: eventType, status });
+  }
+
+  /**
+   * Emits the `campaign.event_reordered` metric. Call this whenever the
+   * campaign event buffer holds back an out-of-order event (ledger sequence
+   * lower than the last-applied sequence for that campaign stream) so it can
+   * be replayed in the correct order, or flushes a buffer window that was
+   * never fully back in order before the buffer timeout elapsed.
+   */
+  static recordCampaignEventReordered(
+    eventType: string,
+    reason: "out_of_order" | "timeout_flush" = "out_of_order"
+  ): void {
+    campaignEventReorderedTotal.inc({ event_type: eventType, reason });
   }
 
   static recordWebhookDelivery(
@@ -608,6 +657,11 @@ export class MetricsCollector {
 
   static updateJobQueueSize(queueName: string, size: number): void {
     jobQueueSize.set({ queue_name: queueName }, size);
+  }
+
+  static updateWebhookWorkerPool(poolSize: number, queueDepth: number): void {
+    webhookDeliveryWorkerPoolSize.set(poolSize);
+    webhookDeliveryQueueDepth.set(queueDepth);
   }
 
   static updateErrorRate(component: string, rate: number): void {

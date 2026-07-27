@@ -54,6 +54,7 @@ export type NormalizedGovernanceEvent = EventBase & (
   | { kind: 'proposal_executed'; proposalId: number; executor: string; success: boolean; returnData?: string; gasUsed?: string }
   | { kind: 'proposal_cancelled'; proposalId: number; canceller: string; reason?: string }
   | { kind: 'proposal_status_changed'; proposalId: number; oldStatus: string; newStatus: string }
+  | { kind: 'proposal_state_snapshot'; proposalId: number; status: string; yesVotes: string; noVotes: string; quorumRequired: string; snapshotLedger: number }
 );
 
 // Vault
@@ -91,6 +92,8 @@ const TOPIC_KIND: Record<string, string> = {
   prop_ex_v1: 'proposal_executed',prop_ex: 'proposal_executed',prop_exec: 'proposal_executed',
   prop_ca_v1: 'proposal_cancelled',prop_ca: 'proposal_cancelled',prop_cancel: 'proposal_cancelled',
   prop_st_v1: 'proposal_status_changed', prop_status: 'proposal_status_changed',
+  // Proposal state snapshot (#1383) — periodic/on-demand fast-forward checkpoint
+  prop_snap: 'proposal_state_snapshot',
   // Vault — v1 only
   vlt_cr_v1: 'vault_created',
   vlt_cl_v1: 'vault_claimed',
@@ -175,6 +178,16 @@ const DECODERS: Record<string, (raw: RawStellarEvent) => NormalizedEvent> = {
     proposalId: num(raw.value?.proposal_id),
     oldStatus: str(raw.value?.old_status),
     newStatus: str(raw.value?.new_status),
+  }),
+
+  proposal_state_snapshot: (raw) => ({
+    ...base(raw), kind: 'proposal_state_snapshot',
+    proposalId: num(raw.value?.proposal_id ?? raw.topic[1]),
+    status: raw.value?.status?.toString() ?? 'active',
+    yesVotes: str(raw.value?.yes_votes),
+    noVotes: str(raw.value?.no_votes),
+    quorumRequired: str(raw.value?.quorum_required),
+    snapshotLedger: num(raw.value?.ledger ?? raw.ledger),
   }),
 
   vault_created: (raw) => ({

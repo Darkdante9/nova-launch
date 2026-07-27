@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { searchTokensSchema, type SearchTokensQuery } from "./schema";
-import { buildTokenSearchQuery } from "./query-builder";
+import { buildTokenSearchQuery, buildPhoneticSearchQuery, phoneticSearch } from "./query-builder";
 import { cacheSearchResults, getCachedSearchResults } from "./cache";
 import type { TokenSearchResponse, TokenSearchErrorResponse } from "./types";
+
+const TOKEN_SELECT = {
+  id: true,
+  address: true,
+  creator: true,
+  name: true,
+  symbol: true,
+  decimals: true,
+  totalSupply: true,
+  initialSupply: true,
+  totalBurned: true,
+  burnCount: true,
+  metadataUri: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,6 +34,7 @@ export async function GET(request: NextRequest) {
       minSupply: searchParams.get("minSupply") || undefined,
       maxSupply: searchParams.get("maxSupply") || undefined,
       hasBurns: searchParams.get("hasBurns") || undefined,
+      fuzzy: (searchParams.get("fuzzy") as "true" | "false") || undefined,
       sortBy: (searchParams.get("sortBy") as any) || "created",
       sortOrder: (searchParams.get("sortOrder") as any) || "desc",
       page: searchParams.get("page") || "1",
@@ -46,39 +63,42 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(cached);
     }
 
-    // Build query
-    const { where, orderBy } = buildTokenSearchQuery(validatedParams);
-
     // Calculate pagination
     const page = parseInt(validatedParams.page);
     const limit = parseInt(validatedParams.limit);
     const skip = (page - 1) * limit;
 
-    // Execute queries in parallel
-    const [tokens, total] = await Promise.all([
-      prisma.token.findMany({
+    let tokens: any[];
+    let total: number;
+
+    if (validatedParams.fuzzy === "true" && validatedParams.q) {
+      // Fetch a broad result set without the q filter, then apply phonetic post-filtering
+      const { where, orderBy } = buildPhoneticSearchQuery(validatedParams);
+
+      const allTokens = await prisma.token.findMany({
         where,
         orderBy,
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          address: true,
-          creator: true,
-          name: true,
-          symbol: true,
-          decimals: true,
-          totalSupply: true,
-          initialSupply: true,
-          totalBurned: true,
-          burnCount: true,
-          metadataUri: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      prisma.token.count({ where }),
-    ]);
+        select: TOKEN_SELECT,
+      });
+
+      const matched = phoneticSearch(allTokens, validatedParams.q);
+      total = matched.length;
+      tokens = matched.slice(skip, skip + limit);
+    } else {
+      // Standard exact/partial match search
+      const { where, orderBy } = buildTokenSearchQuery(validatedParams);
+
+      [tokens, total] = await Promise.all([
+        prisma.token.findMany({
+          where,
+          orderBy,
+          skip,
+          take: limit,
+          select: TOKEN_SELECT,
+        }),
+        prisma.token.count({ where }),
+      ]);
+    }
 
     // Format response
     const response: TokenSearchResponse = {
@@ -105,6 +125,7 @@ export async function GET(request: NextRequest) {
         minSupply: validatedParams.minSupply,
         maxSupply: validatedParams.maxSupply,
         hasBurns: validatedParams.hasBurns,
+        fuzzy: validatedParams.fuzzy,
         sortBy: validatedParams.sortBy,
         sortOrder: validatedParams.sortOrder,
       },

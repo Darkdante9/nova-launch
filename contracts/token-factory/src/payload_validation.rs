@@ -116,6 +116,18 @@ fn validate_policy_payload(payload: &Bytes) -> Result<(), Error> {
     Ok(())
 }
 
+/// Encode a FeeChange payload from (base_fee, metadata_fee).
+///
+/// Produces the canonical 32-byte little-endian encoding consumed by
+/// `validate_payload`/`parse_fee_payload`. Used by the `propose_fee_update`
+/// governance wrapper so callers don't need to hand-roll the byte layout.
+pub fn encode_fee_payload(env: &Env, base_fee: i128, metadata_fee: i128) -> Bytes {
+    let mut arr = [0u8; FEE_PAYLOAD_LEN];
+    arr[0..16].copy_from_slice(&base_fee.to_le_bytes());
+    arr[16..32].copy_from_slice(&metadata_fee.to_le_bytes());
+    Bytes::from_array(env, &arr)
+}
+
 /// Parse FeeChange payload into (base_fee, metadata_fee).
 /// Call only after validate_payload succeeds for FeeChange.
 pub fn parse_fee_payload(payload: &Bytes) -> (i128, i128) {
@@ -181,6 +193,17 @@ mod tests {
         arr[16] = if allowlist { 1 } else { 0 };
         arr[17..25].copy_from_slice(&period.to_le_bytes());
         Bytes::from_array(env, &arr)
+    }
+
+    #[test]
+    fn test_encode_fee_payload_round_trips() {
+        let env = Env::default();
+        let encoded = encode_fee_payload(&env, 2_000_000, 750_000);
+        assert_eq!(encoded, fee_payload(&env, 2_000_000, 750_000));
+        assert!(validate_fee_payload(&encoded).is_ok());
+        let (b, m) = parse_fee_payload(&encoded);
+        assert_eq!(b, 2_000_000);
+        assert_eq!(m, 750_000);
     }
 
     #[test]

@@ -77,12 +77,34 @@ export interface ProposalStatusChangedEvent extends BaseGovernanceEvent {
   newStatus: ProposalStatus;
 }
 
+/**
+ * Periodic (every ~1000 ledgers) or on-demand checkpoint of a proposal's
+ * fully accumulated state, emitted by the contract's `prop_snap`
+ * (`ProposalStateSnapshot`) event (#1383).
+ *
+ * Off-chain indexers can use this as a fast-forward point: instead of
+ * replaying every `proposal_created`/`vote_cast`/status-change event from
+ * genesis, an indexer can seed its projection from the latest snapshot for
+ * a proposal and only replay events emitted after `snapshotLedger`.
+ */
+export interface ProposalStateSnapshotEvent extends BaseGovernanceEvent {
+  type: 'proposal_state_snapshot';
+  proposalId: number;
+  status: ProposalStatus;
+  yesVotes: string;
+  noVotes: string;
+  quorumRequired: string;
+  /** Ledger sequence at which the contract took this snapshot. */
+  snapshotLedger: number;
+}
+
 export type GovernanceEvent =
   | ProposalCreatedEvent
   | VoteCastEvent
   | ProposalExecutedEvent
   | ProposalCancelledEvent
-  | ProposalStatusChangedEvent;
+  | ProposalStatusChangedEvent
+  | ProposalStateSnapshotEvent;
 
 /**
  * Governance Analytics Types

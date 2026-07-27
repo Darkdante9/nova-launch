@@ -14,11 +14,14 @@ import dividendRoutes from "./routes/dividends";
 import statsRoutes from "./routes/stats";
 import governanceRoutes from "./routes/governance";
 import campaignRoutes from "./routes/campaigns";
+import errorRoutes from "./routes/errors";
 import streamRoutes from "./routes/streams";
 import vaultRoutes from "./routes/vaults";
 import versionRoutes from "./routes/version";
 import searchRoutes from "./routes/search";
 import exportRoutes from "./routes/export";
+import stellarRoutes from "./routes/stellar";
+import deployStatusRoutes from "./routes/deployStatus";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
@@ -28,9 +31,13 @@ import { createTimeoutMiddleware } from "./middleware/timeout";
 import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
 import { registerPoolMetrics } from "./lib/metrics/poolMetrics";
+import { registerPrismaTracing } from "./lib/metrics/prismaTracing";
 import { prisma } from "./lib/prisma";
 import stellarEventListener from "./services/stellarEventListener";
 import websocketService from "./services/websocket";
+import jobQueue from "./services/jobQueue";
+import { streamReconciliationService } from "./services/streamReconciliation";
+import "./services/streamDivergenceAlerting";
 
 dotenv.config();
 
@@ -71,6 +78,7 @@ app.use(express.urlencoded({ extended: true }));
 // Initialize database and pool metrics
 Database.initialize();
 registerPoolMetrics(prisma);
+registerPrismaTracing(prisma);
 
 // ---------------------------------------------------------------------------
 // Versioned API router (v1)
@@ -97,11 +105,14 @@ v1Router.use("/dividends", limiter, dividendRoutes);
 v1Router.use("/stats", limiter, statsRoutes);
 v1Router.use("/governance", limiter, governanceRoutes);
 v1Router.use("/campaigns", limiter, campaignRoutes);
+v1Router.use("/errors", limiter, errorRoutes);
 v1Router.use("/streams", limiter, streamRoutes);
 v1Router.use("/vaults", limiter, vaultRoutes);
 v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
+v1Router.use("/stellar", limiter, stellarRoutes);
+v1Router.use("/deploy", limiter, deployStatusRoutes);
 v1Router.use("/graphql", graphqlRouter);
 v1Router.use("/docs", openApiRouter);
 
@@ -223,11 +234,9 @@ const server = app.listen(PORT, async () => {
   // Schedule periodic stream reconciliation if enabled
   if (process.env.ENABLE_STREAM_RECONCILIATION === "true") {
     const reconciliationInterval = parseInt(
-      process.env.STREAM_RECONCILIATION_INTERVAL_MS || "3600000"
+      process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000" // 5 minutes default
     );
-    setInterval(() => {
-      jobQueue.enqueue("stream_reconciliation", {}, {});
-    }, reconciliationInterval);
+    jobQueue.scheduleRecurring("stream_reconciliation", {}, reconciliationInterval);
     console.log(
       `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
     );

@@ -2,7 +2,7 @@
  * Tests for Event Bus Architecture (#843)
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventBus, BusEvent } from "../services/eventBus";
 
 // ---------------------------------------------------------------------------
@@ -470,5 +470,80 @@ describe("Issue #1064: Event bus pub/sub delivery guarantees", () => {
 
     const history = bus.getHistory();
     expect(history).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1406: Schema validation in EventBus.publish (non-production only)
+// ---------------------------------------------------------------------------
+
+describe("Issue #1406: Event schema validation in publish()", () => {
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+  });
+
+  it("publishes successfully when the payload matches its registered schema", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "test";
+
+    await expect(
+      bus.publish("burn.executed", {
+        creatorAddress: "GCREATOR",
+        tokenAddress: "CTOKEN1",
+        amount: "500",
+        burnedBy: "GBURNER",
+        isAdminBurn: false,
+        txHash: "hashB",
+        timestamp: "2026-06-23T00:00:00.000Z",
+      })
+    ).resolves.toBeDefined();
+  });
+
+  it("throws synchronously in non-production when the payload violates its registered schema", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "development";
+
+    await expect(
+      bus.publish("burn.executed", {
+        // missing every required field
+        unexpected: true,
+      })
+    ).rejects.toThrow(/failed schema validation/);
+  });
+
+  it("does not record an invalid event in history (validation happens before dispatch)", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "test";
+
+    await expect(bus.publish("burn.executed", {})).rejects.toThrow();
+    expect(bus.getHistory("burn.executed")).toHaveLength(0);
+  });
+
+  it("does not deliver an invalid event to subscribers", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "test";
+    const handler = vi.fn();
+    bus.subscribe("burn.executed", handler);
+
+    await expect(bus.publish("burn.executed", {})).rejects.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not validate (and does not throw) for event types with no registered schema", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "test";
+
+    await expect(
+      bus.publish("totally.unschematized.event", { whatever: "goes" })
+    ).resolves.toBeDefined();
+  });
+
+  it("skips validation entirely in production, even for an invalid payload", async () => {
+    const bus = makeBus();
+    process.env.NODE_ENV = "production";
+
+    await expect(bus.publish("burn.executed", {})).resolves.toBeDefined();
   });
 });

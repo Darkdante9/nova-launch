@@ -1,11 +1,19 @@
 /**
  * Canary Deployment Service — Nova Launch
- * Issue: #895
+ * Issue: #895, #1350
  *
  * Tracks canary state, evaluates health metrics, and triggers rollback
  * when error rate or latency thresholds are breached.
+ *
+ * Issue #1350 additions:
+ *  - EventEmitter for `deployment.canary.rolled_back` events
+ *  - `getWeight()` to expose current traffic weight
+ *  - `rollbackCanary(reason)` public method for external callers
+ *  - `startMetricsPolling(provider)` for periodic metrics ingestion
+ *  - `performRollback` now sets weight to 0 and emits rollback event
  */
 
+import { EventEmitter } from 'events';
 import { structuredLogger } from '../../monitoring/logging/structured-logger';
 
 export type CanaryStage = 'idle' | 'deploying' | 'observing' | 'promoting' | 'rolled_back' | 'complete';
@@ -39,6 +47,12 @@ export interface CanaryState {
   rollbackReason: string | null;
 }
 
+export interface CanaryRolledBackPayload {
+  deploymentId: string;
+  errorRate: number;
+  reason: string;
+}
+
 const DEFAULT_CONFIG: CanaryConfig = {
   weight:               10,
   bakeTimeMs:           300_000, // 5 min
@@ -47,7 +61,7 @@ const DEFAULT_CONFIG: CanaryConfig = {
   autoRollback:         true,
 };
 
-export class CanaryDeploymentService {
+export class CanaryDeploymentService extends EventEmitter {
   private state: CanaryState = {
     stage:          'idle',
     canaryVersion:  '',
@@ -58,9 +72,11 @@ export class CanaryDeploymentService {
   };
 
   private observationTimer: ReturnType<typeof setInterval> | null = null;
+  private metricsPollingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly config: CanaryConfig;
 
   constructor(config: Partial<CanaryConfig> = {}) {
+    super();
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -96,9 +112,22 @@ export class CanaryDeploymentService {
     await this.performRollback(reason);
   }
 
+  /**
+   * Public rollback method for external callers (e.g. middleware, API handlers).
+   * Triggers an immediate rollback with the provided reason.
+   */
+  async rollbackCanary(reason: string): Promise<void> {
+    await this.performRollback(reason);
+  }
+
   /** Get current canary state (for health endpoint / API). */
   getState(): Readonly<CanaryState> {
     return { ...this.state };
+  }
+
+  /** Returns the current canary traffic weight (0–100). */
+  getWeight(): number {
+    return this.config.weight;
   }
 
   /** Feed fresh metrics into the canary evaluator. */
@@ -115,6 +144,30 @@ export class CanaryDeploymentService {
         structuredLogger.warn('Canary threshold breached — auto-rollback disabled', { reason: breached });
       }
     }
+  }
+
+  /**
+   * Start polling an external metrics provider every 30 seconds.
+   * Feeds results into `evaluateMetrics` so thresholds are checked automatically.
+   *
+   * @param metricsProvider - async function that returns fresh CanaryMetrics
+   */
+  startMetricsPolling(metricsProvider: () => Promise<CanaryMetrics>): void {
+    this.stopMetricsPolling();
+
+    const intervalMs = 30_000;
+    this.metricsPollingTimer = setInterval(async () => {
+      if (this.state.stage !== 'observing') {
+        this.stopMetricsPolling();
+        return;
+      }
+      try {
+        const metrics = await metricsProvider();
+        await this.evaluateMetrics(metrics);
+      } catch (err) {
+        structuredLogger.warn('Canary metrics polling error', { error: (err as Error).message });
+      }
+    }, intervalMs);
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────
@@ -157,6 +210,13 @@ export class CanaryDeploymentService {
     }
   }
 
+  private stopMetricsPolling(): void {
+    if (this.metricsPollingTimer) {
+      clearInterval(this.metricsPollingTimer);
+      this.metricsPollingTimer = null;
+    }
+  }
+
   private checkThresholds(metrics: CanaryMetrics): string | null {
     if (!metrics.healthCheckPassed) return 'health check failed';
     if (metrics.errorRate > this.config.errorRateThreshold) {
@@ -182,13 +242,28 @@ export class CanaryDeploymentService {
 
   private async performRollback(reason: string): Promise<void> {
     this.stopObservation();
+    this.stopMetricsPolling();
+
+    // Revert canary traffic to 0%
+    this.config.weight = 0;
+
     this.state.rollbackReason = reason;
     this.transitionTo('rolled_back');
+
+    const errorRate = this.state.lastMetrics?.errorRate ?? 0;
+    const deploymentId = this.state.canaryVersion;
+
     structuredLogger.error('Canary rollback triggered', {
       reason,
       canaryVersion:  this.state.canaryVersion,
       stableVersion:  this.state.stableVersion,
+      errorRate,
     });
+
+    // Emit event for observability / external listeners
+    const payload: CanaryRolledBackPayload = { deploymentId, errorRate, reason };
+    this.emit('deployment.canary.rolled_back', payload);
+
     // Concrete rollback (kubectl scale / nginx upstream) lives in canary-deploy.sh
   }
 }

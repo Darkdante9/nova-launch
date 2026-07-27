@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PrismaClient, ProposalStatus, ProposalType } from '@prisma/client';
-import { GovernanceEventParser } from '../services/governanceEventParser';
+import {
+  GovernanceEventParser,
+  GovernanceCatchupTransport,
+  RawStellarEvent,
+  DEFAULT_GOVERNANCE_CATCHUP_WINDOW,
+} from '../services/governanceEventParser';
 import { GovernanceEventMapper } from '../services/governanceEventMapper';
+import { EventCursorStore } from '../services/eventCursorStore';
 import {
   proposalCreatedEvent,
   voteCastEventFor,
@@ -341,5 +347,286 @@ describe('Governance Event Parser Integration Tests', () => {
       expect(proposal?.status).toBe(ProposalStatus.EXECUTED);
       expect(proposal?.executions).toHaveLength(1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Catchup window tests (Issue #1353)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal RawStellarEvent that maps to a governance event.
+ */
+function makeRawEvent(
+  overrides: Partial<RawStellarEvent> & { ledger: number },
+): RawStellarEvent {
+  return {
+    type: 'contract',
+    ledger: overrides.ledger,
+    ledger_close_time: new Date(Date.now() - 60_000).toISOString(),
+    contract_id: 'CGOVCONTRACT123456789',
+    id: `event-${overrides.ledger}`,
+    paging_token: `token-${overrides.ledger}`,
+    topic: ['prop_create', 'CTOKEN123456789'],
+    value: {
+      proposal_id: overrides.ledger, // use ledger as unique proposal id
+      proposer: 'GPROPOSER123456789',
+      title: `Proposal at ledger ${overrides.ledger}`,
+      description: 'Catchup test proposal',
+      proposal_type: 0,
+      start_time: Math.floor(Date.now() / 1000),
+      end_time: Math.floor(Date.now() / 1000) + 86400,
+      quorum: 1_000_000_000_000,
+      threshold: 500_000_000_000,
+      metadata: null,
+    },
+    in_successful_contract_call: true,
+    transaction_hash: `tx-catchup-${overrides.ledger}`,
+    ...overrides,
+  };
+}
+
+/**
+ * A controllable in-memory transport for catchup tests.
+ * Returns a fixed list of events on each call.
+ */
+function makeMockTransport(eventPages: RawStellarEvent[][]): GovernanceCatchupTransport {
+  let callCount = 0;
+  return {
+    async getEvents(_url: string, _params: Record<string, unknown>) {
+      const page = eventPages[callCount] ?? [];
+      callCount++;
+      return { data: { _embedded: { records: page } } };
+    },
+  };
+}
+
+describe('GovernanceEventParser — catchup window (Issue #1353)', () => {
+  let prisma: PrismaClient;
+  let cursorStore: EventCursorStore;
+
+  const HORIZON_URL = 'https://horizon-testnet.stellar.org';
+  const CONTRACT_ID = 'CGOVCONTRACT123456789';
+
+  beforeEach(async () => {
+    prisma = new PrismaClient();
+    cursorStore = new EventCursorStore(prisma);
+
+    // Clean test data
+    await prisma.proposalExecution.deleteMany();
+    await prisma.vote.deleteMany();
+    await prisma.proposal.deleteMany();
+    await prisma.integrationState.deleteMany({ where: { key: 'governance_last_ledger' } });
+  });
+
+  afterEach(async () => {
+    await prisma.$disconnect();
+    delete process.env.GOVERNANCE_CATCHUP_WINDOW;
+  });
+
+  // -------------------------------------------------------------------------
+  // CU1: On first boot (no stored cursor) catchup is bounded by the window
+  // -------------------------------------------------------------------------
+  it('CU1: replays events within catchup window on first boot', async () => {
+    const currentLedger = 15_000;
+    // Events at ledgers 5001 and 12000 — only 12000 is inside default 10,000-ledger window
+    const eventsInWindow: RawStellarEvent[] = [makeRawEvent({ ledger: 12_000 })];
+
+    const transport = makeMockTransport([eventsInWindow, []]);
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+
+    const count = await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, currentLedger);
+
+    expect(count).toBe(1);
+
+    // Cursor should be advanced to currentLedger
+    const storedLedger = await cursorStore.loadGovernanceLedger();
+    expect(storedLedger).toBe(currentLedger);
+
+    // Proposal should be persisted
+    const proposal = await prisma.proposal.findUnique({ where: { proposalId: 12_000 } });
+    expect(proposal).not.toBeNull();
+    expect(proposal?.title).toBe('Proposal at ledger 12000');
+  });
+
+  // -------------------------------------------------------------------------
+  // CU2: After service restart, events missed during downtime are processed
+  // -------------------------------------------------------------------------
+  it('CU2: replays missed events after service restart', async () => {
+    // Simulate: service stopped at ledger 1000, restarted at ledger 1005
+    await cursorStore.saveGovernanceLedger(1000);
+
+    const missedEvents: RawStellarEvent[] = [
+      makeRawEvent({ ledger: 1001 }),
+      makeRawEvent({ ledger: 1003 }),
+      makeRawEvent({ ledger: 1005 }),
+    ];
+
+    const transport = makeMockTransport([missedEvents, []]);
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+
+    const count = await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, 1005);
+
+    expect(count).toBe(3);
+
+    const storedLedger = await cursorStore.loadGovernanceLedger();
+    expect(storedLedger).toBe(1005);
+
+    for (const proposalId of [1001, 1003, 1005]) {
+      const p = await prisma.proposal.findUnique({ where: { proposalId } });
+      expect(p).not.toBeNull();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // CU3: No catchup when cursor is already current
+  // -------------------------------------------------------------------------
+  it('CU3: skips catchup when stored cursor matches current ledger', async () => {
+    await cursorStore.saveGovernanceLedger(2000);
+
+    let transportCalled = false;
+    const transport: GovernanceCatchupTransport = {
+      async getEvents() {
+        transportCalled = true;
+        return { data: { _embedded: { records: [] } } };
+      },
+    };
+
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+    const count = await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, 2000);
+
+    expect(count).toBe(0);
+    expect(transportCalled).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // CU4: GOVERNANCE_CATCHUP_WINDOW env var overrides the default
+  // -------------------------------------------------------------------------
+  it('CU4: GOVERNANCE_CATCHUP_WINDOW env var narrows the replay window', async () => {
+    process.env.GOVERNANCE_CATCHUP_WINDOW = '500';
+
+    const currentLedger = 1000;
+    // fromLedger = 1000 - 500 = 500; event at ledger 400 should NOT be fetched
+    // We just verify the transport receives the correct cursor (and returns nothing)
+    const capturedParams: Record<string, unknown>[] = [];
+    const transport: GovernanceCatchupTransport = {
+      async getEvents(_url, params) {
+        capturedParams.push(params);
+        return { data: { _embedded: { records: [] } } };
+      },
+    };
+
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+    await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, currentLedger);
+
+    expect(capturedParams.length).toBeGreaterThan(0);
+    // The cursor sent should correspond to ledger 500 (1000 - 500)
+    // _ledgerToCursor(500) = (499) * 4096 * 4096 * 256 = 2194728321024
+    const expectedCursor = (BigInt(499) * BigInt(4096) * BigInt(4096) * BigInt(256)).toString();
+    expect(capturedParams[0].cursor).toBe(expectedCursor);
+  });
+
+  // -------------------------------------------------------------------------
+  // CU5: Events beyond currentLedger are ignored
+  // -------------------------------------------------------------------------
+  it('CU5: events beyond currentLedger are not processed', async () => {
+    await cursorStore.saveGovernanceLedger(900);
+
+    const currentLedger = 1000;
+    // Mix: 950 is inside the window, 1100 is beyond
+    const events: RawStellarEvent[] = [
+      makeRawEvent({ ledger: 950 }),
+      makeRawEvent({ ledger: 1100 }),
+    ];
+
+    const transport = makeMockTransport([events, []]);
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+
+    const count = await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, currentLedger);
+
+    expect(count).toBe(1); // only ledger 950 processed
+
+    const inside = await prisma.proposal.findUnique({ where: { proposalId: 950 } });
+    expect(inside).not.toBeNull();
+
+    const outside = await prisma.proposal.findUnique({ where: { proposalId: 1100 } });
+    expect(outside).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // CU6: Cursor is updated after each page (crash-safe checkpointing)
+  // -------------------------------------------------------------------------
+  it('CU6: cursor is checkpointed after each page of events', async () => {
+    await cursorStore.saveGovernanceLedger(0);
+
+    const page1: RawStellarEvent[] = Array.from({ length: 200 }, (_, i) =>
+      makeRawEvent({ ledger: i + 1 }),
+    );
+    const page2: RawStellarEvent[] = [makeRawEvent({ ledger: 201 })];
+
+    const transport = makeMockTransport([page1, page2, []]);
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+
+    await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, 250);
+
+    // Final cursor must be 250 (currentLedger)
+    const stored = await cursorStore.loadGovernanceLedger();
+    expect(stored).toBe(250);
+  });
+
+  // -------------------------------------------------------------------------
+  // CU7: Catchup processes events in order (replay is deterministic)
+  // -------------------------------------------------------------------------
+  it('CU7: catchup processes events in ledger order', async () => {
+    await cursorStore.saveGovernanceLedger(500);
+
+    // Provide two proposals in reverse order to verify they are consumed in the
+    // order returned by Horizon (ascending).
+    const events: RawStellarEvent[] = [
+      makeRawEvent({ ledger: 501 }),
+      makeRawEvent({ ledger: 502 }),
+    ];
+
+    const processedLedgers: number[] = [];
+    // Wrap the real transport to record ordering
+    const transport = makeMockTransport([events, []]);
+    const wrappedTransport: GovernanceCatchupTransport = {
+      async getEvents(url, params) {
+        const result = await transport.getEvents(url, params);
+        result.data._embedded?.records.forEach((e) => processedLedgers.push(e.ledger));
+        return result;
+      },
+    };
+
+    const parser = new GovernanceEventParser(prisma, { transport: wrappedTransport, cursorStore });
+    await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, 502);
+
+    expect(processedLedgers).toEqual([501, 502]);
+  });
+
+  // -------------------------------------------------------------------------
+  // CU8: Default catchup window constant is 10,000
+  // -------------------------------------------------------------------------
+  it('CU8: DEFAULT_GOVERNANCE_CATCHUP_WINDOW is 10000', () => {
+    expect(DEFAULT_GOVERNANCE_CATCHUP_WINDOW).toBe(10_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // CU9: catchup events are processed before live events (ordering guarantee)
+  // -------------------------------------------------------------------------
+  it('CU9: catchup completes before returning (live events start after)', async () => {
+    await cursorStore.saveGovernanceLedger(700);
+
+    const catchupEvents: RawStellarEvent[] = [makeRawEvent({ ledger: 701 })];
+    const transport = makeMockTransport([catchupEvents, []]);
+    const parser = new GovernanceEventParser(prisma, { transport, cursorStore });
+
+    // Catchup should complete synchronously (awaited) before the caller proceeds
+    const catchupCompleted = await parser.catchupFromCursor(HORIZON_URL, CONTRACT_ID, 701);
+    expect(catchupCompleted).toBe(1);
+
+    // Verify proposal exists — live processing can now proceed safely
+    const proposal = await prisma.proposal.findUnique({ where: { proposalId: 701 } });
+    expect(proposal).not.toBeNull();
   });
 });

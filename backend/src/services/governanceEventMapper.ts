@@ -5,6 +5,7 @@ import {
   ProposalExecutedEvent,
   ProposalCancelledEvent,
   ProposalStatusChangedEvent,
+  ProposalStateSnapshotEvent,
   ProposalType,
   ProposalStatus,
 } from '../types/governance';
@@ -55,6 +56,8 @@ export class GovernanceEventMapper {
       'prop_qu',
       'prop_ex',
       'prop_ca',
+      // Proposal state snapshot (#1383) — periodic/on-demand checkpoint
+      'prop_snap',
       // Legacy events (for backward compatibility)
       'prop_create',
       'vote_cast',
@@ -102,6 +105,8 @@ export class GovernanceEventMapper {
       case 'prop_st_v1':
       case 'prop_status':
         return this.mapProposalStatusChangedEvent(event);
+      case 'prop_snap':
+        return this.mapProposalStateSnapshotEvent(event);
       default:
         return null;
     }
@@ -230,6 +235,37 @@ export class GovernanceEventMapper {
   }
 
   /**
+   * Map a `ProposalStateSnapshot` event (#1383).
+   *
+   * Topics: ("prop_snap", proposal_id). Payload: (status, yes_votes,
+   * no_votes, quorum_required, ledger) — see
+   * `contracts/token-factory/src/events.rs::emit_proposal_state_snapshot`.
+   *
+   * The proposal_id is carried both as the second topic and (defensively)
+   * inside `value.proposal_id`, mirroring how other indexed-by-id governance
+   * events are mapped elsewhere in this file.
+   */
+  private mapProposalStateSnapshotEvent(event: StellarEvent): ProposalStateSnapshotEvent {
+    const value = event.value || {};
+    const proposalId =
+      value.proposal_id ?? (event.topic[1] ? parseInt(event.topic[1], 10) : 0);
+
+    return {
+      type: 'proposal_state_snapshot',
+      txHash: event.transaction_hash,
+      ledger: event.ledger,
+      timestamp: new Date(event.ledger_close_time),
+      contractId: event.contract_id,
+      proposalId,
+      status: this.mapProposalStatus(value.status),
+      yesVotes: value.yes_votes?.toString() || '0',
+      noVotes: value.no_votes?.toString() || '0',
+      quorumRequired: value.quorum_required?.toString() || '0',
+      snapshotLedger: value.ledger ?? event.ledger,
+    };
+  }
+
+  /**
    * Map proposal type from contract value
    */
   private mapProposalType(type: string | number): ProposalType {
@@ -280,6 +316,12 @@ export class GovernanceEventMapper {
       'executed': ProposalStatus.EXECUTED,
       'cancelled': ProposalStatus.CANCELLED,
       'expired': ProposalStatus.EXPIRED,
+      // Raw contract `ProposalState` variant names (snapshot/status events
+      // may carry these directly instead of the backend's collapsed set).
+      'created': ProposalStatus.ACTIVE,
+      'succeeded': ProposalStatus.PASSED,
+      'defeated': ProposalStatus.REJECTED,
+      'failed': ProposalStatus.REJECTED,
     };
 
     return statusMap[status?.toLowerCase()] || ProposalStatus.ACTIVE;

@@ -29,6 +29,22 @@ export interface StreamListOptions {
   offset?: number;
 }
 
+export interface StreamKeysetOptions {
+  status?: StreamStatus;
+  /** Last `streamId` seen on the previous page; omit for the first page. */
+  cursor?: number;
+  limit?: number;
+}
+
+export interface StreamKeysetPage {
+  streams: StreamProjection[];
+  nextCursor: number | null;
+  hasMore: boolean;
+}
+
+/** Hard upper bound on page size for keyset-paginated stream listings. */
+const MAX_KEYSET_PAGE_SIZE = 50;
+
 export class StreamProjectionService {
   async getStreamById(streamId: number): Promise<StreamProjection | null> {
     const stream = await prisma.stream.findUnique({ where: { streamId } });
@@ -61,6 +77,46 @@ export class StreamProjectionService {
       skip: offset,
     });
     return streams.map((s) => this.buildProjection(s));
+  }
+
+  /**
+   * Keyset-paginated listing of streams created by `creator`, ordered by
+   * `streamId` ascending. `streamId` is monotonically increasing and unique
+   * across the whole projection, so it doubles as a stable cursor: unlike
+   * offset pagination, a stream inserted between two page fetches can never
+   * cause this method to skip or duplicate a row on the next page, because
+   * each page resumes strictly after the last `streamId` it returned.
+   *
+   * Mirrors the on-chain `list_streams_paginated` keyset cursor exposed by
+   * the token-factory contract (`(created_ledger, stream_id)`), using
+   * `streamId` alone since it is already a total order for this projection.
+   */
+  async getStreamsByCreatorKeyset(
+    creator: string,
+    opts: StreamKeysetOptions = {}
+  ): Promise<StreamKeysetPage> {
+    const { status, cursor, limit = MAX_KEYSET_PAGE_SIZE } = opts;
+    const pageSize = Math.min(Math.max(limit, 1), MAX_KEYSET_PAGE_SIZE);
+
+    const streams = await prisma.stream.findMany({
+      where: {
+        creator,
+        ...(status ? { status } : {}),
+        ...(cursor !== undefined ? { streamId: { gt: cursor } } : {}),
+      },
+      orderBy: { streamId: "asc" },
+      take: pageSize + 1,
+    });
+
+    const hasMore = streams.length > pageSize;
+    const page = hasMore ? streams.slice(0, pageSize) : streams;
+    const nextCursor = hasMore ? page[page.length - 1].streamId : null;
+
+    return {
+      streams: page.map((s) => this.buildProjection(s)),
+      nextCursor,
+      hasMore,
+    };
   }
 
   async getStreamStats(address?: string): Promise<StreamStats> {

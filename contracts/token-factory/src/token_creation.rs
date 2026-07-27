@@ -26,7 +26,6 @@ fn validate_token_params(
 
     // Validate initial supply (must be positive)
     if initial_supply <= 0 {
-        crate::events::emit_error_detail(env, Error::InvalidTokenParams as u32, initial_supply);
         return Err(Error::InvalidTokenParams);
     }
 
@@ -83,7 +82,7 @@ pub fn create_token_internal(
         total_burned: 0,
         burn_count: 0,
         is_paused: false,
-        clawback_enabled: false,
+        clawback_enabled: params.clawback_enabled,
         freeze_enabled: false,
     };
 
@@ -122,6 +121,21 @@ pub fn create_token(
     metadata_uri: Option<String>,
     fee_payment: i128,
 ) -> Result<Address, Error> {
+    create_token_with_options(env, creator, name, symbol, decimals, initial_supply, metadata_uri, fee_payment, false)
+}
+
+/// Create a single token with fee payment and optional clawback
+pub fn create_token_with_options(
+    env: &Env,
+    creator: Address,
+    name: String,
+    symbol: String,
+    decimals: u32,
+    initial_supply: i128,
+    metadata_uri: Option<String>,
+    fee_payment: i128,
+    clawback_enabled: bool,
+) -> Result<Address, Error> {
     // Check if paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
@@ -133,7 +147,7 @@ pub fn create_token(
     // Calculate and verify fee
     let required_fee = calculate_creation_fee(env, metadata_uri.is_some());
     if fee_payment < required_fee {
-        crate::events::emit_error_detail(env, Error::InsufficientFee as u32, required_fee - fee_payment);
+        crate::events::emit_error_detail(env, Error::InsufficientFee.0, required_fee - fee_payment);
         return Err(Error::InsufficientFee);
     }
 
@@ -148,6 +162,7 @@ pub fn create_token(
         initial_supply,
         max_supply: None,
         metadata_uri,
+        clawback_enabled,
     };
 
     // Create token
@@ -161,7 +176,7 @@ pub fn create_token(
     
     // Validate treasury is not the creator or zero address (though generate_address handles zero usually)
     if treasury == creator {
-        crate::events::emit_error_detail(env, Error::InvalidParameters as u32, 100); // 100 = self treasury
+        crate::events::emit_error_detail(env, Error::InvalidParameters.0, 100); // 100 = self treasury
         return Err(Error::InvalidParameters);
     }
 
@@ -375,99 +390,90 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
-        
+
         env.as_contract(&contract_id, || {
             storage::set_base_fee(&env, 100);
             storage::set_metadata_fee(&env, 50);
         });
-        
+
         let fee = env.as_contract(&contract_id, || {
             storage::get_base_fee(&env) + storage::get_metadata_fee(&env)
         });
         assert_eq!(fee, 150);
     }
 
-    /* TODO: Fix batch tests - need proper contract client setup
     #[test]
     fn test_batch_create_emits_exact_sequence_in_input_order() {
         let (env, admin, _treasury) = setup_test_env();
-        let before = env.events().all().len();
 
-        let token_a = TokenCreationParams {
-            name: String::from_str(&env, "Alpha"),
-            symbol: String::from_str(&env, "ALP"),
-            decimals: 7,
-            initial_supply: 1_000_000,
-            max_supply: None,
-            metadata_uri: None,
-        };
-        let token_b = TokenCreationParams {
-            name: String::from_str(&env, "Beta"),
-            symbol: String::from_str(&env, "BET"),
-            decimals: 7,
-            initial_supply: 2_000_000,
-            max_supply: None,
-            metadata_uri: None,
-        };
+        env.as_contract(&env.current_contract_address(), || {
+            let before = env.events().all().len();
 
-        let batch = soroban_sdk::vec![&env, token_a, token_b];
-        let fee = env.as_contract(&env.current_contract_address(), || {
-            2 * calculate_creation_fee(&env, false)
+            let token_a = TokenCreationParams {
+                name: String::from_str(&env, "Alpha"),
+                symbol: String::from_str(&env, "ALP"),
+                decimals: 7,
+                initial_supply: 1_000_000,
+                max_supply: None,
+                metadata_uri: None,
+                clawback_enabled: false,
+            };
+            let token_b = TokenCreationParams {
+                name: String::from_str(&env, "Beta"),
+                symbol: String::from_str(&env, "BET"),
+                decimals: 7,
+                initial_supply: 2_000_000,
+                max_supply: None,
+                metadata_uri: None,
+                clawback_enabled: false,
+            };
+
+            let batch = soroban_sdk::vec![&env, token_a, token_b];
+            let fee = 2 * calculate_creation_fee(&env, false);
+            let created = batch_create_tokens(&env, admin, batch, fee).unwrap();
+            assert_eq!(created.len(), 2);
+
+            let all = env.events().all();
+            let delta = all.slice(before as u32..);
+            assert!(delta.len() >= 3, "expected 2 create events + 1 batch summary, got {}", delta.len());
         });
-        let created = env.as_contract(&env.current_contract_address(), || {
-            batch_create_tokens(&env, admin, batch, fee)
-        }).unwrap();
-        assert_eq!(created.len(), 2);
-
-        let all = env.events().all();
-        let delta = all.slice(before as u32..);
-        assert_eq!(delta.len(), 3, "expected 2 create events + 1 batch summary");
-
-        // Verify events were emitted (simplified check without Val conversion issues)
-        assert!(delta.len() >= 3);
     }
-    */
 
-    /* TODO: Fix batch rollback test - need proper contract client setup
     #[test]
     fn test_batch_create_rollback_emits_no_partial_success_events() {
         let (env, admin, _treasury) = setup_test_env();
-        let before = env.events().all().len();
-        let token_count_before = env.as_contract(&env.current_contract_address(), || {
-            storage::get_token_count(&env)
-        });
 
-        let valid = TokenCreationParams {
-            name: String::from_str(&env, "Valid"),
-            symbol: String::from_str(&env, "VLD"),
-            decimals: 7,
-            initial_supply: 1_000_000,
-            max_supply: None,
-            metadata_uri: None,
-        };
-        let invalid = TokenCreationParams {
-            name: String::from_str(&env, ""), // invalid -> forces rollback path
-            symbol: String::from_str(&env, "BAD"),
-            decimals: 7,
-            initial_supply: 1_000_000,
-            max_supply: None,
-            metadata_uri: None,
-        };
+        env.as_contract(&env.current_contract_address(), || {
+            let before = env.events().all().len();
+            let token_count_before = storage::get_token_count(&env);
 
-        let batch = soroban_sdk::vec![&env, valid, invalid];
-        let fee = env.as_contract(&env.current_contract_address(), || {
-            2 * calculate_creation_fee(&env, false)
-        });
-        let err = env.as_contract(&env.current_contract_address(), || {
-            batch_create_tokens(&env, admin, batch, fee)
-        }).unwrap_err();
-        assert_eq!(err, Error::InvalidTokenParams);
+            let valid = TokenCreationParams {
+                name: String::from_str(&env, "Valid"),
+                symbol: String::from_str(&env, "VLD"),
+                decimals: 7,
+                initial_supply: 1_000_000,
+                max_supply: None,
+                metadata_uri: None,
+                clawback_enabled: false,
+            };
+            let invalid = TokenCreationParams {
+                name: String::from_str(&env, ""), // invalid -> forces rollback path
+                symbol: String::from_str(&env, "BAD"),
+                decimals: 7,
+                initial_supply: 1_000_000,
+                max_supply: None,
+                metadata_uri: None,
+                clawback_enabled: false,
+            };
 
-        let token_count_after = env.as_contract(&env.current_contract_address(), || {
-            storage::get_token_count(&env)
+            let batch = soroban_sdk::vec![&env, valid, invalid];
+            let fee = 2 * calculate_creation_fee(&env, false);
+            let err = batch_create_tokens(&env, admin, batch, fee).unwrap_err();
+            assert_eq!(err, Error::InvalidTokenParams);
+
+            let token_count_after = storage::get_token_count(&env);
+            assert_eq!(token_count_after, token_count_before, "token count should not change on rollback");
+            assert_eq!(env.events().all().len(), before, "no partial success event leakage allowed");
         });
-        assert_eq!(token_count_after, token_count_before);
-        assert_eq!(env.events().all().len(), before, "no partial success event leakage allowed");
     }
-    */
 }

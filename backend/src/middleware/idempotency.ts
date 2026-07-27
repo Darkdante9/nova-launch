@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import type Redis from "ioredis";
 import { BadRequestError } from "../lib/errors";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -16,11 +17,26 @@ interface StoredResult {
 }
 
 /**
+ * Common interface implemented by both in-memory and Redis-backed stores.
+ */
+export interface IIdempotencyStore {
+  get(key: string): StoredResult | undefined | Promise<StoredResult | undefined>;
+  complete(key: string, statusCode: number, body: unknown): void | Promise<void>;
+  isInFlight(key: string): boolean | Promise<boolean>;
+  markInFlight(key: string): void | Promise<void>;
+  clearInFlight(key: string): void | Promise<void>;
+  delete(key: string): void | Promise<void>;
+  purgeExpired(): void | Promise<void>;
+  readonly size: number | Promise<number>;
+}
+
+/**
  * In-process idempotency store (suitable for single-process deployments).
  * Swap out for a Redis-backed store in multi-replica environments.
  */
-export class IdempotencyStore {
+export class IdempotencyStore implements IIdempotencyStore {
   private readonly store = new Map<string, StoredResult>();
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly windowMs: number = DEFAULT_IDEMPOTENCY_WINDOW_MS) {}
 
@@ -34,12 +50,32 @@ export class IdempotencyStore {
     return entry;
   }
 
+  /** @deprecated Use complete() instead. Kept for backwards compatibility. */
   set(key: string, statusCode: number, body: unknown): void {
     this.store.set(key, { statusCode, body, createdAt: Date.now() });
+    this.inFlight.delete(key);
+  }
+
+  complete(key: string, statusCode: number, body: unknown): void {
+    this.store.set(key, { statusCode, body, createdAt: Date.now() });
+    this.inFlight.delete(key);
+  }
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  markInFlight(key: string): void {
+    this.inFlight.add(key);
+  }
+
+  clearInFlight(key: string): void {
+    this.inFlight.delete(key);
   }
 
   delete(key: string): void {
     this.store.delete(key);
+    this.inFlight.delete(key);
   }
 
   /** Remove all expired entries (call periodically to prevent unbounded growth). */
@@ -57,6 +93,79 @@ export class IdempotencyStore {
   }
 }
 
+/**
+ * Redis-backed idempotency store for multi-replica deployments.
+ * Uses SETNX for atomic in-flight lock acquisition.
+ */
+export class RedisIdempotencyStore implements IIdempotencyStore {
+  private readonly IN_FLIGHT_PREFIX = "idm:inflight:";
+  private readonly RESULT_PREFIX = "idm:result:";
+  private readonly ttlSeconds: number;
+
+  constructor(
+    private readonly redis: Redis,
+    private readonly windowMs: number = DEFAULT_IDEMPOTENCY_WINDOW_MS,
+  ) {
+    this.ttlSeconds = Math.ceil(windowMs / 1000);
+  }
+
+  async get(key: string): Promise<StoredResult | undefined> {
+    const raw = await this.redis.get(this.RESULT_PREFIX + key);
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as StoredResult;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async complete(key: string, statusCode: number, body: unknown): Promise<void> {
+    const value = JSON.stringify({ statusCode, body, createdAt: Date.now() });
+    await this.redis.set(this.RESULT_PREFIX + key, value, "EX", this.ttlSeconds);
+    await this.redis.del(this.IN_FLIGHT_PREFIX + key);
+  }
+
+  async isInFlight(key: string): Promise<boolean> {
+    const val = await this.redis.exists(this.IN_FLIGHT_PREFIX + key);
+    return val === 1;
+  }
+
+  /**
+   * Atomically acquires an in-flight lock using SETNX.
+   * Returns true if the lock was acquired (key was not already in-flight).
+   */
+  async markInFlight(key: string): Promise<void> {
+    // SETNX: set if not exists; EX for safety expiry (same as result window)
+    await this.redis.set(
+      this.IN_FLIGHT_PREFIX + key,
+      "1",
+      "EX",
+      this.ttlSeconds,
+      "NX",
+    );
+  }
+
+  async clearInFlight(key: string): Promise<void> {
+    await this.redis.del(this.IN_FLIGHT_PREFIX + key);
+  }
+
+  async delete(key: string): Promise<void> {
+    await Promise.all([
+      this.redis.del(this.RESULT_PREFIX + key),
+      this.redis.del(this.IN_FLIGHT_PREFIX + key),
+    ]);
+  }
+
+  async purgeExpired(): Promise<void> {
+    // Redis TTL handles expiry automatically; nothing to do here.
+  }
+
+  get size(): number {
+    // Size is not cheaply available from Redis; return 0 as sentinel.
+    return 0;
+  }
+}
+
 /** Singleton store used by the default middleware. */
 export const idempotencyStore = new IdempotencyStore();
 
@@ -68,15 +177,17 @@ setInterval(() => idempotencyStore.purgeExpired(), 60 * 60 * 1000).unref();
  *
  * Contract:
  *  - Clients include `Idempotency-Key: <uuid>` on creation requests.
- *  - If the key was seen within `windowMs`, the original response is returned immediately.
+ *  - If the key has a COMPLETED result within `windowMs`, the original response is
+ *    returned immediately with status 200 and `Idempotency-Status: replayed`.
+ *  - If the key is IN-FLIGHT (original request still processing), returns 409 with
+ *    `{ status: 'PROCESSING', requestId: '<key>' }` and `Idempotency-Status: processing`.
  *  - If the key is absent, the request is passed through unmodified.
  *  - Keys longer than MAX_KEY_LENGTH or containing non-printable characters are rejected 400.
  *
- * @param store   IdempotencyStore instance (defaults to the module-level singleton)
- * @param windowMs Expiry window (defaults to DEFAULT_IDEMPOTENCY_WINDOW_MS)
+ * @param store   IIdempotencyStore instance (defaults to the module-level singleton)
  */
 export function createIdempotencyMiddleware(
-  store: IdempotencyStore = idempotencyStore,
+  store: IIdempotencyStore = idempotencyStore,
 ) {
   return function idempotencyMiddleware(
     req: Request,
@@ -101,24 +212,45 @@ export function createIdempotencyMiddleware(
       return;
     }
 
-    // Cache hit → replay stored response
-    const stored = store.get(key);
-    if (stored) {
-      res.status(stored.statusCode).json(stored.body);
-      return;
-    }
-
-    // Intercept res.json to capture the response for future replays
-    const originalJson = res.json.bind(res) as (body: unknown) => Response;
-    res.json = (body: unknown): Response => {
-      // Only cache successful (2xx) responses
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        store.set(key, res.statusCode, body);
+    // Async handler to support both sync and async stores
+    const handle = async (): Promise<void> => {
+      // Check for completed result first
+      const stored = await store.get(key);
+      if (stored) {
+        res.setHeader(IDEMPOTENCY_HEADER, key);
+        res.setHeader("Idempotency-Status", "replayed");
+        res.status(stored.statusCode).json(stored.body);
+        return;
       }
-      return originalJson(body);
+
+      // Check if the key is in-flight
+      const inFlight = await store.isInFlight(key);
+      if (inFlight) {
+        res.setHeader(IDEMPOTENCY_HEADER, key);
+        res.setHeader("Idempotency-Status", "processing");
+        res.status(409).json({ status: "PROCESSING", requestId: key });
+        return;
+      }
+
+      // Mark as in-flight before handing off to the handler
+      await store.markInFlight(key);
+
+      // Intercept res.json to capture the response for future replays
+      const originalJson = res.json.bind(res) as (body: unknown) => Response;
+      res.json = (body: unknown): Response => {
+        // Only cache successful (2xx) responses
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          void store.complete(key, res.statusCode, body);
+        } else {
+          void store.clearInFlight(key);
+        }
+        return originalJson(body);
+      };
+
+      next();
     };
 
-    next();
+    handle().catch(next);
   };
 }
 

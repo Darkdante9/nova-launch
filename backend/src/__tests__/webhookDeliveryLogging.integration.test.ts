@@ -32,6 +32,10 @@
 process.env.WEBHOOK_MAX_RETRIES = "3"
 process.env.WEBHOOK_TIMEOUT_MS = "200"
 process.env.WEBHOOK_RETRY_DELAY_MS = "0" // keep tests fast
+// This file is about delivery logging, not rate limiting — raise the
+// per-tenant bucket so none of these calls are ever queued.
+process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE = "100000"
+process.env.WEBHOOK_RATE_LIMIT_BURST = "10000"
 
 import nock from "nock";
 import { describe, it, beforeEach, afterEach, vi, expect } from "vitest";

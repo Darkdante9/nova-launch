@@ -5,6 +5,7 @@ import {
   getNewestTokensLeaderboard,
   getLargestSupplyLeaderboard,
   getMostBurnersLeaderboard,
+  getCacheStatus,
   TimePeriod,
 } from "../services/leaderboardService";
 import { successResponse, errorResponse } from "../utils/response";
@@ -152,6 +153,27 @@ router.get("/most-burners", async (req: Request, res: Response) => {
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
         message: "Failed to fetch leaderboard",
+      })
+    );
+  }
+});
+
+/**
+ * GET /api/leaderboard/cache-status
+ * Health-monitoring endpoint reporting whether the Redis sorted-set cache
+ * is reachable/warm for each rank-style board, or currently operating in
+ * full-recomputation fallback mode.
+ */
+router.get("/cache-status", async (_req: Request, res: Response) => {
+  try {
+    const status = await getCacheStatus();
+    res.json(successResponse(status));
+  } catch (error) {
+    console.error("Error fetching leaderboard cache status:", error);
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch cache status",
       })
     );
   }

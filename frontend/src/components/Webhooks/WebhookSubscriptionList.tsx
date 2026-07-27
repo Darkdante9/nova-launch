@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { webhookApi, WebhookSubscription, WebhookEventType } from '../../services/webhookApi';
+import { webhookApi, WebhookSubscription, WebhookEventType, DeadLetterEntry } from '../../services/webhookApi';
 import { useWallet } from '../../hooks/useWallet';
 import { Card } from '../UI/Card';
 import { Button } from '../UI/Button';
@@ -7,6 +7,8 @@ import { Spinner } from '../UI/Spinner';
 import { ConfirmDialog } from '../UI/ConfirmDialog';
 import { Modal } from '../UI/Modal';
 import { WebhookDeliveryLogs } from './WebhookDeliveryLogs';
+import { DeadLetterTab } from './DeadLetterTab';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../UI/Tabs';
 import { Icons } from '../UI/Icons';
 
 export function WebhookSubscriptionList() {
@@ -19,6 +21,7 @@ export function WebhookSubscriptionList() {
     const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
     const [isTestingId, setIsTestingId] = useState<string | null>(null);
     const [query, setQuery] = useState('');
+    const [deadLetterCounts, setDeadLetterCounts] = useState<Record<string, number>>({});
 
     const fetchSubscriptions = useCallback(async () => {
         if (!wallet?.address) return;
@@ -26,6 +29,20 @@ export function WebhookSubscriptionList() {
         try {
             const data = await webhookApi.listSubscriptions(wallet.address);
             setSubscriptions(data);
+            
+            // Fetch dead-letter counts for each subscription
+            const counts: Record<string, number> = {};
+            for (const sub of data) {
+                try {
+                    const deadLetters = await webhookApi.getDeadLetters(sub.id, 1);
+                    // Just get the count by making a small request
+                    const allDeadLetters = await webhookApi.getDeadLetters(sub.id, 999);
+                    counts[sub.id] = allDeadLetters.length;
+                } catch (err) {
+                    counts[sub.id] = 0;
+                }
+            }
+            setDeadLetterCounts(counts);
             setError(null);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load subscriptions');
@@ -242,7 +259,7 @@ export function WebhookSubscriptionList() {
                                     className="text-blue-600 border-blue-200 hover:bg-blue-50"
                                     onClick={() => setSelectedSubId(sub.id)}
                                 >
-                                    View Delivery Logs
+                                    View Details
                                 </Button>
                             </div>
                         </div>
@@ -265,10 +282,25 @@ export function WebhookSubscriptionList() {
             <Modal
                 isOpen={!!selectedSubId}
                 onClose={() => setSelectedSubId(null)}
-                title="Webhook Delivery Logs"
+                title="Webhook Details"
                 maxWidth="4xl"
             >
-                {selectedSubId && <WebhookDeliveryLogs subscriptionId={selectedSubId} />}
+                {selectedSubId && (
+                    <Tabs defaultValue="logs" className="w-full">
+                        <TabsList className="w-full">
+                            <TabsTrigger value="logs">Delivery Logs</TabsTrigger>
+                            <TabsTrigger value="dead-letters" badge={deadLetterCounts[selectedSubId] || 0}>
+                                Dead Letters
+                            </TabsTrigger>
+                        </TabsList>
+                        <TabsContent value="logs" className="mt-6">
+                            <WebhookDeliveryLogs subscriptionId={selectedSubId} />
+                        </TabsContent>
+                        <TabsContent value="dead-letters" className="mt-6">
+                            <DeadLetterTab subscriptionId={selectedSubId} />
+                        </TabsContent>
+                    </Tabs>
+                )}
             </Modal>
         </div>
     );

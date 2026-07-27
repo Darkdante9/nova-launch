@@ -1,8 +1,9 @@
 import pinataSDK from "@pinata/sdk";
 import NodeCache from "node-cache";
-import { CircuitBreaker } from "../circuitBreaker.js";
+import { CircuitBreaker, registerCircuitBreaker } from "../circuitBreaker.js";
 import { verifyCIDContent, verifyMetadataCID } from "./cidVerification.js";
 import { pinataQueue, type PinataQueueMetrics } from "./pinataQueue.js";
+import { gatewayRouter } from "./gatewayRouter.js";
 
 const cache = new NodeCache({ stdTTL: 3600 }); // 1 hour cache
 
@@ -11,9 +12,28 @@ const ipfsCircuitBreaker = new CircuitBreaker({
   successThreshold: 2,
   timeoutMs: 30000, // 30 seconds before retry
 });
+// Retry-with-backoff for transient (429/5xx) failures is handled by
+// `pinataQueue` itself; this breaker just protects against sustained outages.
+// Registered here so its state is visible via GET /health/detailed.
+registerCircuitBreaker("pinata", ipfsCircuitBreaker);
 
 const PINATA_BASE_URL = "https://api.pinata.cloud";
 const CREDENTIAL_VALIDATION_TIMEOUT_MS = 10000;
+
+// ---------------------------------------------------------------------------
+// Prometheus metric: metadata.cid_mismatch counter
+// ---------------------------------------------------------------------------
+
+export const metadataCidMismatchCounter = new Counter({
+  name: "metadata_cid_mismatch_total",
+  help: "Total number of CID integrity mismatches detected on metadata retrieval",
+  labelNames: ["cid"],
+  registers: [register],
+});
+
+// ---------------------------------------------------------------------------
+// Credentials management
+// ---------------------------------------------------------------------------
 
 interface PinataCredentials {
   apiKey: string;
@@ -110,22 +130,43 @@ export function getActivePinataCredentials(): PinataCredentials {
   return { ...activeCredentials };
 }
 
+// ---------------------------------------------------------------------------
+// Upload-time CID verification config
+// ---------------------------------------------------------------------------
+
 // Set IPFS_VERIFY_CID=true to enable content-address integrity checks after upload.
 const CID_VERIFY_ENABLED = process.env.IPFS_VERIFY_CID === "true";
 const CID_VERIFY_GATEWAY =
   process.env.IPFS_VERIFY_GATEWAY_URL ?? "https://gateway.pinata.cloud/ipfs";
 
+// ---------------------------------------------------------------------------
+// Re-pin from trusted gateway
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-pin a CID from the trusted public IPFS gateway via Pinata's pinByHash API.
+ *
+ * Called automatically when a CID mismatch is detected on retrieval.
+ */
+export async function rePinFromGateway(cid: string): Promise<void> {
+  const pinata = await getPinataClient();
+  await pinata.pinByHash(cid, {
+    pinataMetadata: { name: `repin-${cid}` },
+  });
+  console.info(`[pinata] Successfully re-pinned CID ${cid} from gateway`);
+}
+
+// ---------------------------------------------------------------------------
+// Upload operations
+// ---------------------------------------------------------------------------
+
 export async function uploadImageToIPFS(
   buffer: Buffer,
   filename: string
 ): Promise<string> {
-<<<<<<< feat/integration-pinata-queue
   return ipfsCircuitBreaker.execute(() =>
     pinataQueue.enqueue(async () => {
-      const pinata = new pinataSDK(
-        process.env.PINATA_API_KEY!,
-        process.env.PINATA_API_SECRET!
-      );
+      const pinata = await getPinataClient();
 
       const result = await pinata.pinFileToIPFS(buffer, {
         pinataMetadata: { name: filename },
@@ -145,10 +186,7 @@ export async function uploadImageToIPFS(
 export async function uploadMetadataToIPFS(metadata: any): Promise<string> {
   return ipfsCircuitBreaker.execute(() =>
     pinataQueue.enqueue(async () => {
-      const pinata = new pinataSDK(
-        process.env.PINATA_API_KEY!,
-        process.env.PINATA_API_SECRET!
-      );
+      const pinata = await getPinataClient();
 
       const result = await pinata.pinJSONToIPFS(metadata);
       const cid = result.IpfsHash;
@@ -163,41 +201,6 @@ export async function uploadMetadataToIPFS(metadata: any): Promise<string> {
       return cid;
     })
   );
-=======
-  return ipfsCircuitBreaker.execute(async () => {
-    const pinata = await getPinataClient();
-
-    const result = await pinata.pinFileToIPFS(buffer, {
-      pinataMetadata: { name: filename },
-    });
-
-    const cid = result.IpfsHash;
-
-    if (CID_VERIFY_ENABLED) {
-      await verifyCIDContent(buffer, cid, CID_VERIFY_GATEWAY);
-    }
-
-    return cid;
-  });
-}
-
-export async function uploadMetadataToIPFS(metadata: any): Promise<string> {
-  return ipfsCircuitBreaker.execute(async () => {
-    const pinata = await getPinataClient();
-
-    const result = await pinata.pinJSONToIPFS(metadata);
-    const cid = result.IpfsHash;
-
-    if (CID_VERIFY_ENABLED) {
-      await verifyMetadataCID(metadata, cid, CID_VERIFY_GATEWAY);
-    }
-
-    // Cache the metadata
-    cache.set(cid, metadata);
-
-    return cid;
-  });
->>>>>>> main
 }
 
 export async function getMetadataFromIPFS(cid: string): Promise<any> {
@@ -205,21 +208,17 @@ export async function getMetadataFromIPFS(cid: string): Promise<any> {
   const cached = cache.get(cid);
   if (cached) return cached;
 
-  // Fetch from IPFS with circuit breaker + queue throttle
-  return ipfsCircuitBreaker.execute(() =>
-    pinataQueue.enqueue(async () => {
-      const response = await fetch(
-        `https://gateway.pinata.cloud/ipfs/${cid}`
-      );
-      if (!response.ok) throw new Error("Metadata not found");
-
-      const metadata = await response.json();
-      cache.set(cid, metadata);
-
-      return metadata;
-    })
-  );
+  // Fetch via gateway router (primary → secondary → tertiary with failover)
+  return ipfsCircuitBreaker.execute(async () => {
+    const metadata = await gatewayRouter.fetch(cid);
+    cache.set(cid, metadata);
+    return metadata;
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Observability helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Get the current state of the IPFS circuit breaker (for monitoring/debugging).
@@ -244,3 +243,5 @@ export function resetIPFSCircuitBreaker(): void {
 export function getPinataQueueMetrics(): PinataQueueMetrics {
   return pinataQueue.getMetrics();
 }
+
+export { CIDMismatchError };

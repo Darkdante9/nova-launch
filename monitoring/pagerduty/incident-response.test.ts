@@ -14,6 +14,8 @@ import {
   alertDatabasePoolExhausted,
   resolveEventListenerDown,
   resolveHighApiErrorRate,
+  alertStreamDivergence,
+  resolveStreamDivergence,
 } from "./incident-response";
 
 // ---------------------------------------------------------------------------
@@ -421,6 +423,85 @@ describe("PagerDuty Incident Response", () => {
         const parsed = JSON.parse(capturedBody);
         expect(parsed.event_action).toBe("resolve");
         expect(parsed.dedup_key).toBe("nova-api-high-error-rate");
+      } finally {
+        process.env.PAGERDUTY_ROUTING_KEY = original;
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Stream divergence alerts
+  // -------------------------------------------------------------------------
+
+  describe("stream divergence alerts", () => {
+    it("alertStreamDivergence uses error severity (P2) and a per-stream/field dedup key", async () => {
+      let capturedBody = "";
+      vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+        const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+        const req = Object.assign(new EventEmitter(), {
+          write: vi.fn((data: string) => {
+            capturedBody = data;
+          }),
+          end: vi.fn(() => {
+            if (callback) {
+              (callback as (res: any) => void)(res);
+              res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+              res.emit("end");
+            }
+          }),
+        });
+        return req as any;
+      });
+
+      const original = process.env.PAGERDUTY_ROUTING_KEY;
+      process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+      try {
+        await alertStreamDivergence({
+          streamId: 42,
+          field: "balance",
+          onChainValue: "100",
+          projectedValue: "150",
+        });
+        const parsed = JSON.parse(capturedBody);
+        expect(parsed.payload.severity).toBe("error");
+        expect(parsed.dedup_key).toBe("nova-stream-divergence-42-balance");
+        expect(parsed.payload.custom_details).toEqual({
+          streamId: 42,
+          field: "balance",
+          onChainValue: "100",
+          projectedValue: "150",
+        });
+      } finally {
+        process.env.PAGERDUTY_ROUTING_KEY = original;
+      }
+    });
+
+    it("resolveStreamDivergence sends resolve for the matching dedup key", async () => {
+      let capturedBody = "";
+      vi.spyOn(https, "request").mockImplementation((_opts, callback) => {
+        const res = Object.assign(new EventEmitter(), { statusCode: 202 });
+        const req = Object.assign(new EventEmitter(), {
+          write: vi.fn((data: string) => {
+            capturedBody = data;
+          }),
+          end: vi.fn(() => {
+            if (callback) {
+              (callback as (res: any) => void)(res);
+              res.emit("data", JSON.stringify(SUCCESS_RESPONSE));
+              res.emit("end");
+            }
+          }),
+        });
+        return req as any;
+      });
+
+      const original = process.env.PAGERDUTY_ROUTING_KEY;
+      process.env.PAGERDUTY_ROUTING_KEY = ROUTING_KEY;
+      try {
+        await resolveStreamDivergence(42, "balance");
+        const parsed = JSON.parse(capturedBody);
+        expect(parsed.event_action).toBe("resolve");
+        expect(parsed.dedup_key).toBe("nova-stream-divergence-42-balance");
       } finally {
         process.env.PAGERDUTY_ROUTING_KEY = original;
       }

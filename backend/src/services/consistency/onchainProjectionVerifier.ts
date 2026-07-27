@@ -386,6 +386,22 @@ export class OnChainProjectionVerifier {
             severity: "error",
           });
         }
+
+        // Auto-reconcile when divergence is detected
+        if (
+          Math.abs(token.burnCount - onChainBurnCount) > this.tolerances.countDriftAbsolute ||
+          !this.isWithinTolerance(token.totalBurned, onChainTotalBurned)
+        ) {
+          try {
+            await this.reconcileProjection(token.address);
+          } catch (reconcileErr) {
+            errors.push(
+              `Auto-reconciliation failed for ${token.address}: ${
+                reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)
+              }`
+            );
+          }
+        }
       }
 
       return { diffs, errors, checked };
@@ -640,6 +656,70 @@ export class OnChainProjectionVerifier {
   }
 
   /**
+   * Reconcile Prisma projection for a single token against on-chain state.
+   *
+   * Idempotent: calling this multiple times produces the same result.
+   * If the projection already matches on-chain state, no write is performed.
+   *
+   * @param tokenAddress - Stellar contract address of the token
+   */
+  async reconcileProjection(tokenAddress: string): Promise<ReconciliationResult> {
+    const now = new Date();
+    const fieldsUpdated: string[] = [];
+
+    // Fetch on-chain burn events
+    const onChainBurns = await this.fetcher.fetchBurnEvents(tokenAddress);
+
+    if (onChainBurns === null) {
+      throw new Error(
+        `reconcileProjection: could not fetch on-chain data for ${tokenAddress}`
+      );
+    }
+
+    const onChainBurnCount = onChainBurns.length;
+    const onChainTotalBurned = onChainBurns.reduce(
+      (sum, b) => sum + b.amount,
+      BigInt(0)
+    );
+
+    const token = await this.prisma.token.findUnique({
+      where: { address: tokenAddress },
+      select: { totalBurned: true, burnCount: true, lastReconciledAt: true },
+    });
+
+    if (!token) {
+      throw new Error(
+        `reconcileProjection: token not found in projection: ${tokenAddress}`
+      );
+    }
+
+    // Build update payload — only fields that differ
+    const updateData: Record<string, any> = { lastReconciledAt: now };
+
+    if (token.totalBurned !== onChainTotalBurned) {
+      updateData.totalBurned = onChainTotalBurned;
+      fieldsUpdated.push("totalBurned");
+    }
+
+    if (token.burnCount !== onChainBurnCount) {
+      updateData.burnCount = onChainBurnCount;
+      fieldsUpdated.push("burnCount");
+    }
+
+    await this.prisma.token.update({
+      where: { address: tokenAddress },
+      data: updateData,
+    });
+
+    return {
+      tokenAddress,
+      fieldsUpdated,
+      alreadyConsistent: fieldsUpdated.length === 0,
+      lastReconciledAt: now,
+    };
+  }
+
+  /**
    * Format check results for human-readable output
    */
   formatResults(result: ConsistencyCheckResult): string {
@@ -733,6 +813,17 @@ export class OnChainProjectionVerifier {
     const percentDiff = Number((diff * BigInt(100)) / maxVal);
     return percentDiff <= this.tolerances.amountDriftPercent;
   }
+}
+
+// ============================================================================
+// Reconciliation
+// ============================================================================
+
+export interface ReconciliationResult {
+  tokenAddress: string;
+  fieldsUpdated: string[];
+  alreadyConsistent: boolean;
+  lastReconciledAt: Date;
 }
 
 // ============================================================================

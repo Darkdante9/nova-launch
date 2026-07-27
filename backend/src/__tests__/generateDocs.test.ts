@@ -1,11 +1,12 @@
 /**
  * Tests for automated documentation generation from code comments (#903)
+ * Extended with OpenAPI auth path validation (#1349)
  */
 
 import { describe, it, expect } from "vitest";
 import { tmpdir } from "os";
-import { join } from "path";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { join, resolve } from "path";
+import { writeFileSync, mkdirSync, rmSync, readFileSync } from "fs";
 import {
   stripJsdocLines,
   parseJsdocBlock,
@@ -343,5 +344,122 @@ describe("renderMarkdown", () => {
     const md = renderMarkdown(docs, "API");
     expect(md).toContain("`src/a.ts`");
     expect(md).toContain("`src/b.ts`");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenAPI auth endpoint validation (#1349)
+// ---------------------------------------------------------------------------
+
+describe("openapi.json auth endpoints", () => {
+  const openapiPath = resolve(__dirname, "../../openapi.json");
+  let spec: Record<string, unknown>;
+
+  it("loads and parses openapi.json without errors", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    spec = JSON.parse(raw) as Record<string, unknown>;
+    expect(spec).toBeDefined();
+  });
+
+  it("has Authentication tag defined", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as { tags?: Array<{ name: string }> };
+    const tags = parsed.tags ?? [];
+    const authTag = tags.find((t) => t.name === "Authentication");
+    expect(authTag).toBeDefined();
+  });
+
+  it("documents POST /auth/challenge path", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as { paths?: Record<string, unknown> };
+    const paths = parsed.paths ?? {};
+    expect(paths["/auth/challenge"]).toBeDefined();
+    const endpoint = paths["/auth/challenge"] as Record<string, unknown>;
+    expect(endpoint["post"]).toBeDefined();
+  });
+
+  it("documents POST /auth/verify path", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as { paths?: Record<string, unknown> };
+    const paths = parsed.paths ?? {};
+    expect(paths["/auth/verify"]).toBeDefined();
+    const endpoint = paths["/auth/verify"] as Record<string, unknown>;
+    expect(endpoint["post"]).toBeDefined();
+  });
+
+  it("documents POST /auth/refresh path", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as { paths?: Record<string, unknown> };
+    const paths = parsed.paths ?? {};
+    expect(paths["/auth/refresh"]).toBeDefined();
+    const endpoint = paths["/auth/refresh"] as Record<string, unknown>;
+    expect(endpoint["post"]).toBeDefined();
+  });
+
+  it("documents DELETE /auth/session path", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as { paths?: Record<string, unknown> };
+    const paths = parsed.paths ?? {};
+    expect(paths["/auth/session"]).toBeDefined();
+    const endpoint = paths["/auth/session"] as Record<string, unknown>;
+    expect(endpoint["delete"]).toBeDefined();
+  });
+
+  it("/auth/verify documents 200, 400, 401, and 403 responses", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
+    };
+    const verifyPost = parsed.paths?.["/auth/verify"]?.["post"];
+    const responses = verifyPost?.responses ?? {};
+    expect(responses["200"]).toBeDefined();
+    expect(responses["400"]).toBeDefined();
+    expect(responses["401"]).toBeDefined();
+    expect(responses["403"]).toBeDefined();
+  });
+
+  it("/auth/refresh documents 200, 400, 401, and 403 responses", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
+    };
+    const refreshPost = parsed.paths?.["/auth/refresh"]?.["post"];
+    const responses = refreshPost?.responses ?? {};
+    expect(responses["200"]).toBeDefined();
+    expect(responses["400"]).toBeDefined();
+    expect(responses["401"]).toBeDefined();
+    expect(responses["403"]).toBeDefined();
+  });
+
+  it("/auth/session DELETE documents 204 and 401 responses", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      paths?: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
+    };
+    const sessionDelete = parsed.paths?.["/auth/session"]?.["delete"];
+    const responses = sessionDelete?.responses ?? {};
+    expect(responses["204"]).toBeDefined();
+    expect(responses["401"]).toBeDefined();
+  });
+
+  it("components contain WalletAuthRequest, RefreshTokenRequest, AuthResponse, NonceResponse schemas", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      components?: { schemas?: Record<string, unknown> };
+    };
+    const schemas = parsed.components?.schemas ?? {};
+    expect(schemas["WalletAuthRequest"]).toBeDefined();
+    expect(schemas["RefreshTokenRequest"]).toBeDefined();
+    expect(schemas["AuthResponse"]).toBeDefined();
+    expect(schemas["NonceResponse"]).toBeDefined();
+  });
+
+  it("components contain BearerAuth security scheme", () => {
+    const raw = readFileSync(openapiPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      components?: { securitySchemes?: Record<string, unknown> };
+    };
+    const schemes = parsed.components?.securitySchemes ?? {};
+    expect(schemes["BearerAuth"]).toBeDefined();
   });
 });

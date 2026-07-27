@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Line, Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import { format } from 'date-fns';
+import FeeStatsPanel from './FeeStatsPanel';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
 
@@ -38,6 +39,8 @@ export default function Dashboard() {
         <MetricCard title="Efficiency Score" value={metrics.efficiency} change={metrics.efficiencyChange} unit="%" />
         <MetricCard title="Monthly Cost" value={metrics.monthlyCost} change={metrics.costChange} unit="XLM" />
       </section>
+
+      <FeeStatsPanel />
 
       <section className="charts">
         <div className="chart-container">

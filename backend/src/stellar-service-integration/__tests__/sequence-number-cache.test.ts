@@ -401,4 +401,125 @@ describe('SequenceNumberCache', () => {
       expect(cache.getStats().size).toBe(0);
     });
   });
+
+  // ── Ledger-close invalidation ────────────────────────────────────────────
+
+  describe('Ledger-close subscription', () => {
+    /** Build a minimal mock Stellar server whose stream fires once. */
+    function makeMockServer(triggerImmediately = true): {
+      server: any;
+      fireLedger: () => void;
+    } {
+      let onmessageHandler: ((ledger: any) => void) | null = null;
+
+      const streamFn = jest.fn((opts: { onmessage: (l: any) => void }) => {
+        onmessageHandler = opts.onmessage;
+        if (triggerImmediately) {
+          setImmediate(() => opts.onmessage({ sequence: 1 }));
+        }
+        return jest.fn(); // stop fn
+      });
+
+      const server = {
+        ledgers: () => ({
+          order: () => ({
+            cursor: () => ({
+              stream: streamFn,
+            }),
+          }),
+        }),
+        loadAccount: jest.fn(),
+      };
+
+      return {
+        server,
+        fireLedger: () => onmessageHandler?.({ sequence: 99 }),
+      };
+    }
+
+    afterEach(() => {
+      cache.stopLedgerSubscription();
+    });
+
+    it('cache miss (Horizon fetch) — get returns null for uncached account', () => {
+      const accountId = 'GABC';
+      expect(cache.get(accountId)).toBeNull();
+    });
+
+    it('cache hit — get returns cached value before any ledger event', () => {
+      const accountId = 'GABC';
+      cache.set(accountId, '42');
+      expect(cache.get(accountId)).toBe('42');
+    });
+
+    it('ledger-close invalidation — entry is evicted on ledger close', async () => {
+      const accountId = 'GABC';
+      cache.set(accountId, '42');
+
+      const { server, fireLedger } = makeMockServer(false);
+      cache.startLedgerSubscription(server, new Set([accountId]));
+
+      fireLedger();
+      // Allow microtasks/setImmediate to run
+      await new Promise((r) => setImmediate(r));
+
+      expect(cache.get(accountId)).toBeNull();
+    });
+
+    it('stale_evictions counter increments on ledger-close eviction', async () => {
+      const accountId = 'GABC';
+      cache.set(accountId, '10');
+
+      expect(cache.staleEvictions).toBe(0);
+
+      const { server, fireLedger } = makeMockServer(false);
+      cache.startLedgerSubscription(server, new Set([accountId]));
+      fireLedger();
+      await new Promise((r) => setImmediate(r));
+
+      expect(cache.staleEvictions).toBe(1);
+    });
+
+    it('stale_evictions counter increments on TTL-based expiry', async () => {
+      const shortTtlCache = new SequenceNumberCache(50); // 50 ms TTL
+      const accountId = 'GABC';
+      shortTtlCache.set(accountId, '5');
+
+      // Wait for TTL to elapse then trigger a get() which calls _evictStale
+      await new Promise((r) => setTimeout(r, 80));
+      expect(shortTtlCache.get(accountId)).toBeNull();
+      expect(shortTtlCache.staleEvictions).toBe(1);
+
+      shortTtlCache.stopLedgerSubscription();
+    });
+
+    it('stopLedgerSubscription prevents further evictions', async () => {
+      const accountId = 'GABC';
+      cache.set(accountId, '7');
+
+      const { server, fireLedger } = makeMockServer(false);
+      cache.startLedgerSubscription(server, new Set([accountId]));
+      cache.stopLedgerSubscription();
+
+      // Re-add after stopping, then fire ledger — should NOT be evicted
+      cache.set(accountId, '7');
+      fireLedger();
+      await new Promise((r) => setImmediate(r));
+
+      expect(cache.get(accountId)).toBe('7');
+    });
+
+    it('getStats includes staleEvictions count', async () => {
+      const accountId = 'GABC';
+      cache.set(accountId, '3');
+
+      const { server, fireLedger } = makeMockServer(false);
+      cache.startLedgerSubscription(server, new Set([accountId]));
+      fireLedger();
+      await new Promise((r) => setImmediate(r));
+
+      const stats = cache.getStats();
+      expect(stats.staleEvictions).toBe(1);
+    });
+  });
 });

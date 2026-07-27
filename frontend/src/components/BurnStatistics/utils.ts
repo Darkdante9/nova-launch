@@ -42,6 +42,41 @@ export function calculatePercentBurned(totalBurned: string, initialSupply: strin
   return Number((burned * BigInt(10000)) / supply) / 100;
 }
 
+export interface CsvColumn<T> {
+  key: keyof T;
+  label: string;
+}
+
+export function exportToCsv<T extends Record<string, unknown>>(
+  rows: T[],
+  filename: string,
+  columns: CsvColumn<T>[]
+): void {
+  const header = columns.map((c) => JSON.stringify(c.label)).join(',');
+  const body = rows
+    .map((row) =>
+      columns
+        .map((c) => {
+          const val = row[c.key];
+          if (val === null || val === undefined) return '';
+          return JSON.stringify(String(val));
+        })
+        .join(',')
+    )
+    .join('\n');
+
+  const csv = `${header}\n${body}`;
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `${filename}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export function aggregateBurnData(
   records: { timestamp: number; amount: string }[],
   interval: 'day' | 'week' | 'month' = 'day'

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, beforeAll } from "vitest";
+import { describe, it, expect, beforeEach, vi, beforeAll, afterEach } from "vitest";
 
 // ── In-memory stores ─────────────────────────────────────────────────────────
 const mockCampaigns = new Map<number, any>();
@@ -208,5 +208,66 @@ describe("Campaign Projection Ingestion", () => {
     expect(active.every((c: any) => c.status === "ACTIVE")).toBe(true);
     expect(active.length).toBe(1);
     expect(active[0].campaignId).toBe(1);
+  });
+});
+
+describe("Event Buffer", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("in-order events are processed immediately without buffering", async () => {
+    const { EventBuffer } = await import("../services/campaignProjectionService");
+    const processed: number[] = [];
+    const buf = new EventBuffer<number>(async (e) => { processed.push(e.ledger); });
+
+    await buf.ingest({ ledger: 1, payload: 1 });
+    await buf.ingest({ ledger: 2, payload: 2 });
+    await buf.ingest({ ledger: 3, payload: 3 });
+
+    expect(processed).toEqual([1, 2, 3]);
+  });
+
+  it("out-of-order events are buffered and processed in ledger order", async () => {
+    const { EventBuffer } = await import("../services/campaignProjectionService");
+    const processed: number[] = [];
+    const buf = new EventBuffer<number>(async (e) => { processed.push(e.ledger); });
+
+    await buf.ingest({ ledger: 1, payload: 1 });
+    await buf.ingest({ ledger: 3, payload: 3 });
+    await buf.ingest({ ledger: 2, payload: 2 }); // out-of-order triggers reorder + drain
+
+    expect(processed).toEqual([1, 2, 3]);
+  });
+
+  it("timeout flush processes remaining buffered events in ledger order", async () => {
+    vi.useFakeTimers();
+    const { EventBuffer } = await import("../services/campaignProjectionService");
+    const processed: number[] = [];
+    const buf = new EventBuffer<number>(async (e) => { processed.push(e.ledger); }, 5_000);
+
+    await buf.ingest({ ledger: 1, payload: 1 });
+    await buf.ingest({ ledger: 3, payload: 3 }); // gap — stays buffered
+    expect(processed).toEqual([1]);
+
+    await vi.runAllTimersAsync();
+    expect(processed).toEqual([1, 3]);
+  });
+
+  it("campaign.event_reordered metric emitted on reorder", async () => {
+    const { EventBuffer } = await import("../services/campaignProjectionService");
+    const metrics: string[] = [];
+    const buf = new EventBuffer<number>(
+      async () => {},
+      10_000,
+      (m) => metrics.push(m)
+    );
+
+    // Process ledgers 1 and 2, then receive ledger 1 again (below lastProcessed → reorder)
+    await buf.ingest({ ledger: 1, payload: 1 });
+    await buf.ingest({ ledger: 2, payload: 2 });
+    await buf.ingest({ ledger: 1, payload: 1 }); // ledger 1 <= lastProcessed(2) → reorder
+
+    expect(metrics).toContain("campaign.event_reordered");
   });
 });

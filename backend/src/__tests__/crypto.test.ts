@@ -3,6 +3,8 @@ import {
   generateWebhookSecret,
   generateSignature,
   verifySignature,
+  generateWebhookSignature,
+  verifyStoredWebhookSignature,
   isValidUrl,
   isValidStellarAddress,
 } from "../utils/crypto";
@@ -51,6 +53,39 @@ describe("Crypto Utils", () => {
 
       const isValid = verifySignature(payload, signature, secret2);
       expect(isValid).toBe(false);
+    });
+  });
+
+  describe("verifyStoredWebhookSignature", () => {
+    it("verifies a signature regardless of how old its timestamp is", () => {
+      const payload = JSON.stringify({ event: "token.created", timestamp: "t", data: {} });
+      const secret = "test-secret";
+      const longAgo = Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 30; // 30 days ago
+
+      const header = generateWebhookSignature(payload, secret, longAgo);
+
+      expect(verifyStoredWebhookSignature(payload, header, secret)).toBe(true);
+    });
+
+    it("rejects a signature generated with a different secret", () => {
+      const payload = JSON.stringify({ event: "token.created", timestamp: "t", data: {} });
+      const header = generateWebhookSignature(payload, "secret-a");
+
+      expect(verifyStoredWebhookSignature(payload, header, "secret-b")).toBe(false);
+    });
+
+    it("rejects a signature for a different payload", () => {
+      const secret = "test-secret";
+      const header = generateWebhookSignature(JSON.stringify({ a: 1 }), secret);
+
+      expect(
+        verifyStoredWebhookSignature(JSON.stringify({ a: 2 }), header, secret)
+      ).toBe(false);
+    });
+
+    it("rejects a malformed header", () => {
+      expect(verifyStoredWebhookSignature("payload", "not-a-valid-header", "secret")).toBe(false);
+      expect(verifyStoredWebhookSignature("payload", "", "secret")).toBe(false);
     });
   });
 

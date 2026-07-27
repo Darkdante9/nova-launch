@@ -273,7 +273,8 @@ export class EventReplayService {
     if (
       topic.includes('prop_create') ||
       topic.includes('vote') ||
-      topic.includes('prop_exec')
+      topic.includes('prop_exec') ||
+      topic.includes('prop_snap')
     ) {
       await this.governanceParser.parseEvent(event as any);
       return;

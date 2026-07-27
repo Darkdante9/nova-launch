@@ -1,6 +1,8 @@
 import { Component } from 'react';
-import type { ErrorInfo, ReactNode } from 'react';
+import type { ContextType, ErrorInfo, ReactNode } from 'react';
 import { Button } from './Button';
+import { ErrorContext } from '../../providers/ErrorContextProvider';
+import { buildErrorReportPayload, reportError } from '../../services/errorReportingService';
 
 interface Props {
     children: ReactNode;
@@ -13,6 +15,11 @@ interface State {
 }
 
 export class ErrorBoundary extends Component<Props, State> {
+    // Lets componentDidCatch read the Stellar transaction context set by
+    // ErrorContextProvider (which must wrap this boundary — see main.tsx).
+    public static contextType = ErrorContext;
+    public declare context: ContextType<typeof ErrorContext>;
+
     public state: State = {
         hasError: false,
         error: null,
@@ -24,6 +31,13 @@ export class ErrorBoundary extends Component<Props, State> {
 
     public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
         console.error('ErrorBoundary caught an error:', error, errorInfo);
+
+        const txContext = this.context?.txContext;
+        if (txContext) {
+            reportError(
+                buildErrorReportPayload(error, errorInfo.componentStack ?? undefined, txContext)
+            );
+        }
     }
 
     private handleReset = () => {

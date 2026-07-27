@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Scoped mutation-testing config for backend/src/services/auditRetentionJob.ts (issue #1331). Mutates only the retention job so a single `npm run test:mutation:audit` run stays fast and focused on the < vs <= boundary regression this issue is about.",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.mutation-audit.ts"
+  },
+  "mutate": [
+    "src/services/auditRetentionJob.ts:28-54"
+  ],
+  "testRunnerNodeArgs": [],
+  "ignoreStatic": true,
+  "disableTypeChecks": "src/services/auditRetentionJob.ts",
+  "mutator": {
+    "plugins": null
+  },
+  "reporters": [
+    "html",
+    "clear-text",
+    "progress"
+  ],
+  "htmlReporter": {
+    "fileName": "reports/mutation/audit-retention/index.html"
+  },
+  "coverageAnalysis": "perTest",
+  "thresholds": {
+    "high": 90,
+    "low": 70,
+    "break": 70
+  },
+  "tempDirName": ".stryker-tmp-audit"
+}

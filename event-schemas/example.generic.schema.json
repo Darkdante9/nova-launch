@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/example.generic.schema.json",
+  "title": "ExampleGenericEvent",
+  "description": "Template/example schema for ad-hoc events published via eventBus.publish() that do not yet have a dedicated schema (e.g. test/debug topics such as \"test.event\", \"orphan.event\"). Copy this file when adding a new event type — do not use it to validate arbitrary production events.",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "example.generic",
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Schema version for this event type. Bump on breaking changes."
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}

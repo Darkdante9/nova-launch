@@ -12,6 +12,7 @@ import { Button, ProgressBar, LoadingButton } from '../UI';
 import { analytics } from '../../services/analytics';
 import { Input } from '../UI/Input';
 import type { TokenTemplate } from '../../config/tokenTemplates';
+import { useErrorContext } from '../../providers/ErrorContextProvider';
 
 interface TokenDeployFormProps {
     wallet: WalletState;
@@ -40,6 +41,8 @@ export function TokenDeployForm({
 
     const { deploy, reset, status, statusMessage, isDeploying, error } =
         useTokenDeploy(wallet, { baseFee, metadataFee });
+
+    const { setTxContext } = useErrorContext();
     
     const { isPaused, loading: pauseLoading, error: pauseError, refresh: refreshPauseState } = 
         useFactoryState({ network: wallet.network, pollingInterval: 30000 });
@@ -90,12 +93,21 @@ export function TokenDeployForm({
                 : undefined,
         };
 
+        // So a render error during the deploy confirmation step is reported
+        // with the Stellar context that was in flight, not a blank slate.
+        setTxContext({
+            walletAddress: wallet.address,
+            network: wallet.network,
+            route: window.location.pathname,
+        });
+
         try {
             try {
                 analytics.track('deploy_button_click', { network: wallet.network });
             } catch {}
 
             const deployment = await deploy(params);
+            setTxContext({ txHash: deployment.transactionHash });
             setResult(deployment);
         } catch {
             setResult(null);

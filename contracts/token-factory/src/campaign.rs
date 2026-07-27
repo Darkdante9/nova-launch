@@ -79,6 +79,10 @@ pub fn pause_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<(
             // Terminal state: cannot pause cancelled campaign
             return Err(Error::CampaignCancelled);
         }
+        CampaignStatus::Expired => {
+            // Terminal state: cannot pause expired campaign
+            return Err(Error::CampaignExpiredError);
+        }
     }
 
     // Persist state change
@@ -145,6 +149,10 @@ pub fn resume_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<
         CampaignStatus::Cancelled => {
             // Terminal state: cannot resume cancelled campaign
             return Err(Error::CampaignCancelled);
+        }
+        CampaignStatus::Expired => {
+            // Terminal state: cannot resume expired campaign
+            return Err(Error::CampaignExpiredError);
         }
     }
 
@@ -373,14 +381,6 @@ mod tests {
 
         env.as_contract(&env.current_contract_address(), || {
             let campaign = make_campaign(env, admin, CampaignStatus::Active);
-            storage::set_campaign(env, 1, &campaign);
-
-            let result = pause_campaign(env, &attacker, 1);
-            assert_eq!(result, Err(Error::Unauthorized));
-        });
-    }
-                created_at: env.ledger().timestamp(),
-            };
             storage::set_campaign(env, 1, &campaign);
 
             let result = pause_campaign(env, &attacker, 1);

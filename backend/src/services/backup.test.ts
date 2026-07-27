@@ -24,12 +24,26 @@ vi.mock("util", () => ({
 }));
 
 const mockReaddir = vi.fn();
+const mockWriteFile = vi.fn();
+const mockMkdir = vi.fn();
 
 vi.mock("fs/promises", () => ({
   default: {
     readdir: (...args: any[]) => mockReaddir(...args),
+    writeFile: (...args: any[]) => mockWriteFile(...args),
+    mkdir: (...args: any[]) => mockMkdir(...args),
   },
   readdir: (...args: any[]) => mockReaddir(...args),
+  writeFile: (...args: any[]) => mockWriteFile(...args),
+  mkdir: (...args: any[]) => mockMkdir(...args),
+}));
+
+// Mock Database so archiveAuditRecords does not need real DB.
+const mockGetAuditLogs = vi.fn();
+vi.mock("../config/database", () => ({
+  Database: {
+    getAuditLogs: (...args: any[]) => mockGetAuditLogs(...args),
+  },
 }));
 
 import { execFile } from "child_process";
@@ -396,6 +410,121 @@ describe("BackupService.restore", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+// ── archiveAuditRecords ───────────────────────────────────────────────────────
+
+describe("BackupService.archiveAuditRecords", () => {
+  let service: BackupService;
+
+  const makeLog = (daysAgo: number) => ({
+    id: `audit_${daysAgo}`,
+    adminId: "admin_1",
+    action: "token.flag",
+    resource: "token",
+    resourceId: "tok_1",
+    beforeState: null,
+    afterState: null,
+    ipAddress: "127.0.0.1",
+    userAgent: "test",
+    timestamp: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+  });
+
+  beforeEach(() => {
+    service = makeService("/test/pitr");
+    vi.clearAllMocks();
+    mockMkdir.mockResolvedValue(undefined);
+    mockWriteFile.mockResolvedValue(undefined);
+  });
+
+  it("writes NDJSON to the warm tier path", async () => {
+    const log = makeLog(100);
+    mockGetAuditLogs.mockResolvedValueOnce([log]);
+
+    const olderThan = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "warm");
+
+    expect(result.success).toBe(true);
+    expect(result.archived).toBe(1);
+    expect(result.tier).toBe("warm");
+    expect(result.path).toMatch(/\/test\/pitr\/audit\/warm\/audit-.*\.ndjson$/);
+    expect(mockMkdir).toHaveBeenCalledWith(
+      "/test/pitr/audit/warm",
+      { recursive: true }
+    );
+    const [filePath, content] = mockWriteFile.mock.calls[0];
+    const lines = content.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).id).toBe(log.id);
+  });
+
+  it("writes NDJSON to the cold tier path", async () => {
+    const log = makeLog(400);
+    mockGetAuditLogs.mockResolvedValueOnce([log]);
+
+    const olderThan = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "cold");
+
+    expect(result.success).toBe(true);
+    expect(result.tier).toBe("cold");
+    expect(result.path).toMatch(/\/test\/pitr\/audit\/cold\/audit-.*\.ndjson$/);
+  });
+
+  it("returns archived=0 and success when no records match", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce([makeLog(10)]); // too recent
+    const olderThan = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "warm");
+
+    expect(result.success).toBe(true);
+    expect(result.archived).toBe(0);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("returns failure with error message when writeFile throws", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce([makeLog(100)]);
+    mockWriteFile.mockRejectedValueOnce(new Error("disk full"));
+
+    const olderThan = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "warm");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("disk full");
+    expect(result.archived).toBe(0);
+  });
+
+  it("archives multiple records as separate NDJSON lines", async () => {
+    const logs = [makeLog(100), makeLog(150), makeLog(200)];
+    mockGetAuditLogs.mockResolvedValueOnce(logs);
+
+    const olderThan = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "warm");
+
+    expect(result.archived).toBe(3);
+    const [, content] = mockWriteFile.mock.calls[0];
+    const lines = content.trim().split("\n");
+    expect(lines).toHaveLength(3);
+    lines.forEach((line: string) => expect(() => JSON.parse(line)).not.toThrow());
+  });
+
+  it("only archives records older than the cutoff", async () => {
+    const old = makeLog(200);
+    const recent = makeLog(10);
+    mockGetAuditLogs.mockResolvedValueOnce([old, recent]);
+
+    const olderThan = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    const result = await service.archiveAuditRecords(olderThan, "warm");
+
+    expect(result.archived).toBe(1);
+    const [, content] = mockWriteFile.mock.calls[0];
+    expect(JSON.parse(content.trim())).toMatchObject({ id: old.id });
+  });
+
+  it("records durationMs", async () => {
+    mockGetAuditLogs.mockResolvedValueOnce([]);
+    const olderThan = new Date();
+    const result = await service.archiveAuditRecords(olderThan, "cold");
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 });
 

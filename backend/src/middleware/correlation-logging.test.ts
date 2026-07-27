@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Request, Response, NextFunction } from 'express';
 import { CorrelationLogger } from './correlation-logging';
+import { runWithContext, getCorrelationId } from '../lib/async-context';
+import { JobQueue } from '../services/jobQueue';
 
 describe('CorrelationLogger', () => {
   let mockReq: Partial<Request>;
@@ -119,5 +121,116 @@ describe('CorrelationLogger', () => {
     middleware(mockReq as Request, mockRes as Response, mockNext);
 
     expect(mockReq.correlationId).toBe(correlationId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Async job queue — correlation ID propagation
+// ---------------------------------------------------------------------------
+
+describe('JobQueue — correlation ID propagation', () => {
+  /** Wait for all pending microtasks + a short real delay. */
+  function flush(ms = 30): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  let q: JobQueue;
+
+  beforeEach(() => {
+    q = new JobQueue(2);
+    q.start();
+  });
+
+  afterEach(() => {
+    q.stop();
+  });
+
+  it('attaches the current correlation ID to the enqueued job', () => {
+    q.register('cid.attach', async () => {});
+
+    let job: ReturnType<typeof q.enqueue>;
+    runWithContext('req-attach-id', () => {
+      job = q.enqueue('cid.attach', {});
+    });
+
+    expect(job!.correlationId).toBe('req-attach-id');
+  });
+
+  it('stores undefined correlationId when enqueued outside a request context', () => {
+    q.register('cid.none', async () => {});
+    const job = q.enqueue('cid.none', {});
+    expect(job.correlationId).toBeUndefined();
+  });
+
+  it('restores the correlation ID inside the job worker', async () => {
+    let capturedId: string | undefined;
+
+    q.register('cid.worker', async () => {
+      capturedId = getCorrelationId();
+    });
+
+    runWithContext('req-worker-id', () => {
+      q.enqueue('cid.worker', {});
+    });
+
+    await flush();
+
+    expect(capturedId).toBe('req-worker-id');
+  });
+
+  it('worker runs without a correlation context when none was set at enqueue time', async () => {
+    let capturedId: string | undefined = 'sentinel';
+
+    q.register('cid.nocontext', async () => {
+      capturedId = getCorrelationId();
+    });
+
+    q.enqueue('cid.nocontext', {});
+    await flush();
+
+    expect(capturedId).toBeUndefined();
+  });
+
+  it('logs emitted inside a job worker include the originating correlationId', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    q.register('cid.log', async () => {
+      CorrelationLogger.log(getCorrelationId()!, 'info', 'job ran');
+    });
+
+    runWithContext('req-log-id', () => {
+      q.enqueue('cid.log', {});
+    });
+
+    await flush();
+
+    const calls = logSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    const jobLog = calls.find((e) => e.message === 'job ran');
+
+    expect(jobLog).toBeDefined();
+    expect(jobLog!.correlationId).toBe('req-log-id');
+
+    logSpy.mockRestore();
+  });
+
+  it('isolates correlation IDs across concurrent jobs from different requests', async () => {
+    const captured: Record<string, string | undefined> = {};
+
+    q.register('cid.iso', async (job: any) => {
+      captured[job.payload.label] = getCorrelationId();
+    });
+
+    runWithContext('req-A', () => {
+      q.enqueue('cid.iso', { label: 'A' });
+    });
+
+    runWithContext('req-B', () => {
+      q.enqueue('cid.iso', { label: 'B' });
+    });
+
+    await flush(50);
+
+    expect(captured['A']).toBe('req-A');
+    expect(captured['B']).toBe('req-B');
   });
 });

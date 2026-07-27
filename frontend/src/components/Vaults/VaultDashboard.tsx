@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useWallet } from '../../hooks/useWallet';
+import { useVaultBalanceSubscription } from '../../hooks/useVaultBalanceSubscription';
 import { vaultsApi, fetchCurrentLedger } from '../../services/vaultsApi';
 import { VaultCard } from './VaultCard';
 import type { VaultProjection } from '../../types';
@@ -32,6 +33,21 @@ export const VaultDashboard: React.FC = () => {
       setLoading(false);
     }
   }, [address]);
+
+  const handleBalanceChanged = useCallback(
+    (vaultId: number, newBalance: string) => {
+      setVaults((prev) =>
+        prev.map((v) =>
+          v.streamId === vaultId ? { ...v, amount: newBalance } : v
+        )
+      );
+    },
+    []
+  );
+
+  const vaultIds = vaults.map((v) => v.streamId);
+  const { isConnected: subscriptionConnected, error: subscriptionError } =
+    useVaultBalanceSubscription(vaultIds, handleBalanceChanged);
 
   useEffect(() => {
     load();
@@ -68,9 +84,15 @@ export const VaultDashboard: React.FC = () => {
         </button>
       </div>
 
-      {error && (
+      {(error || subscriptionError) && (
         <p className="mb-4 text-sm text-red-600" role="alert">
-          {error}
+          {error || subscriptionError}
+        </p>
+      )}
+
+      {subscriptionConnected && (
+        <p className="mb-4 text-sm text-green-600" role="status">
+          ✓ Real-time balance updates enabled
         </p>
       )}
 
@@ -96,6 +118,7 @@ export const VaultDashboard: React.FC = () => {
               currentLedger={currentLedger}
               network={network}
               onClaimed={handleClaimed}
+              onFetchWithdrawals={vaultsApi.getWithdrawalHistory}
             />
           ))
         )}

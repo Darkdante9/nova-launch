@@ -2,7 +2,8 @@ use crate::events;
 use crate::payload_validation;
 use crate::storage;
 use crate::types::{
-    ActionType, ChangeType, Error, PendingChange, Proposal, TimelockConfig, VoteChoice,
+    ActionType, ChangeType, Error, PendingChange, Proposal, TimelockConfig, TimelockDelayConfig,
+    VoteChoice,
 };
 #[cfg(test)]
 use soroban_sdk::testutils::Ledger;
@@ -44,6 +45,43 @@ pub fn initialize_timelock(env: &Env, delay_seconds: Option<u64>) -> Result<(), 
     events::emit_timelock_configured(env, delay);
 
     Ok(())
+}
+
+/// Return the per-proposal-type timelock delay configuration.
+pub fn get_timelock_delay_config(env: &Env) -> TimelockDelayConfig {
+    storage::get_timelock_delay_config(env)
+}
+
+/// Update the per-proposal-type timelock delays.
+///
+/// Can only be called through a successfully-executed governance proposal
+/// (not directly by admin), ensuring delays themselves are subject to governance.
+///
+/// # Errors
+/// * `Error::Unauthorized` - If called outside a governance execution context
+///   (i.e. the caller is not the contract itself via `env.current_contract_address()`).
+pub fn set_timelock_delay_config(env: &Env, config: &TimelockDelayConfig) -> Result<(), Error> {
+    // Minimum sanity: each delay must be at least 1 ledger
+    if config.fee_change_delay == 0
+        || config.admin_transfer_delay == 0
+        || config.upgrade_delay == 0
+        || config.default_delay == 0
+    {
+        return Err(Error::InvalidParameters);
+    }
+    storage::set_timelock_delay_config(env, config);
+    Ok(())
+}
+
+/// Map an `ActionType` to its required delay in ledgers.
+pub fn delay_for_action(env: &Env, action_type: ActionType) -> u64 {
+    let cfg = storage::get_timelock_delay_config(env);
+    match action_type {
+        ActionType::FeeChange | ActionType::PolicyUpdate => cfg.fee_change_delay,
+        ActionType::TreasuryChange => cfg.admin_transfer_delay,
+        ActionType::ParameterChange => cfg.upgrade_delay,
+        ActionType::PauseContract | ActionType::UnpauseContract => cfg.default_delay,
+    }
 }
 
 /// Schedule a fee update
@@ -534,6 +572,19 @@ pub fn create_proposal(
     let proposal_id = storage::get_next_proposal_id(env);
     storage::increment_proposal_count(env);
 
+    // Snapshot circulating supply (sum of total_supply across all deployed tokens)
+    // at proposal creation time so quorum is not affected by future supply changes.
+    let circulating_supply_snapshot: i128 = {
+        let token_count = storage::get_token_count(env);
+        let mut supply_sum: i128 = 0;
+        for i in 0..token_count {
+            if let Some(info) = storage::get_token_info(env, i) {
+                supply_sum = supply_sum.saturating_add(info.total_supply);
+            }
+        }
+        supply_sum
+    };
+
     // Create proposal
     let proposal = Proposal {
         id: proposal_id,
@@ -545,12 +596,15 @@ pub fn create_proposal(
         start_time,
         end_time,
         eta,
+        timelock_delay: 0, // captured at queue time
+        queued_at_ledger: 0, // set when queued
         votes_for: 0,
         votes_against: 0,
         votes_abstain: 0,
         state: crate::types::ProposalState::Created,
         executed_at: None,
         cancelled_at: None,
+        circulating_supply_snapshot,
     };
 
     // Persist proposal
@@ -566,6 +620,10 @@ pub fn create_proposal(
         end_time,
         eta,
     );
+
+    // Opportunistically emit a state snapshot if this proposal (or another
+    // active one touched via this entry point) is due for one (#1383).
+    crate::governance::maybe_auto_snapshot(env, proposal_id, &proposal);
 
     Ok(proposal_id)
 }
@@ -611,6 +669,10 @@ pub fn cancel_proposal(env: &Env, caller: &Address, proposal_id: u64) -> Result<
     proposal.state = crate::types::ProposalState::Cancelled;
     proposal.cancelled_at = Some(env.ledger().timestamp());
     storage::set_proposal(env, proposal_id, &proposal);
+
+    // Drop the proposal from its per-type FIFO queue so it no longer blocks
+    // later same-type proposals (#1366). No-op if it was never enqueued.
+    crate::proposal_type_queue::remove(env, proposal_id);
 
     events::emit_proposal_cancelled(env, proposal_id, caller);
 
@@ -1083,6 +1145,10 @@ pub fn vote_proposal(
     // Emit event
     events::emit_proposal_voted(env, proposal_id, voter, support);
 
+    // Opportunistically emit a state snapshot if enough ledgers have
+    // elapsed since this proposal's last snapshot (#1383).
+    crate::governance::maybe_auto_snapshot(env, proposal_id, &proposal);
+
     Ok(())
 }
 
@@ -1154,17 +1220,12 @@ pub fn finalize_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
     let config = storage::get_governance_config(env);
     let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
 
-    // Token-weighted quorum: eligible weight = sum of all token total supplies.
-    // Falls back to vote count if no tokens have been deployed yet.
-    let total_eligible: i128 = {
-        let token_count = storage::get_token_count(env);
-        let mut supply_sum: i128 = 0;
-        for i in 0..token_count {
-            if let Some(info) = storage::get_token_info(env, i) {
-                supply_sum = supply_sum.saturating_add(info.total_supply);
-            }
-        }
-        if supply_sum > 0 { supply_sum } else { total_votes.max(1) }
+    // Use the circulating supply snapshotted at proposal creation as the quorum
+    // denominator. Fall back to vote count if no tokens existed at creation time.
+    let total_eligible: i128 = if proposal.circulating_supply_snapshot > 0 {
+        proposal.circulating_supply_snapshot
+    } else {
+        total_votes.max(1)
     };
 
     let quorum_met = crate::governance::is_quorum_met(
@@ -1274,6 +1335,11 @@ pub fn queue_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
     // Re-validate payload before queueing (defense in depth; rejects legacy malformed proposals)
     payload_validation::validate_payload(env, proposal.action_type, &proposal.payload)?;
 
+    // Capture the per-type delay at queue time (not at execution time)
+    let queued_delay = delay_for_action(env, proposal.action_type);
+    proposal.timelock_delay = queued_delay;
+    proposal.queued_at_ledger = env.ledger().sequence();
+
     // Transition to Queued state
     ProposalStateMachine::validate_transition(proposal.state, crate::types::ProposalState::Queued)?;
 
@@ -1284,6 +1350,12 @@ pub fn queue_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
 
     // Emit event
     events::emit_proposal_queued(env, proposal_id, proposal.eta);
+
+    // Dedicated fee-update event (#1385): signals the pending fee change is
+    // now timelocked and cannot execute before `eta`.
+    if proposal.action_type == ActionType::FeeChange {
+        events::emit_fee_update_queued(env, proposal_id, proposal.eta);
+    }
 
     Ok(())
 }
@@ -1313,6 +1385,12 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
         return Err(Error::TimelockNotExpired);
     }
 
+    // FIFO ordering (#1366): if this proposal was placed in its action-type
+    // execution queue, only the front-of-queue entry may execute. Proposals of
+    // the same type therefore execute in the order they were queued; proposals
+    // of different types are in independent queues and are unaffected.
+    crate::proposal_type_queue::enforce_front(env, proposal_id)?;
+
     // Emit event signalling the proposal is now executable (timelock elapsed)
     events::emit_proposal_executable(env, proposal_id, proposal.eta);
 
@@ -1322,6 +1400,9 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
             storage::set_base_fee(env, base_fee);
             storage::set_metadata_fee(env, metadata_fee);
             events::emit_fees_updated_v2(env, &proposal.proposer, base_fee, metadata_fee);
+            // Dedicated fee-update event (#1385): the pending fee change has
+            // now been applied to contract storage after timelock expiry.
+            events::emit_fee_update_executed(env, proposal_id, &proposal.proposer, base_fee, metadata_fee);
         }
         ActionType::TreasuryChange => {
             let new_treasury = payload_validation::parse_treasury_payload(env, &proposal.payload);
@@ -1360,6 +1441,11 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
     proposal.state = crate::types::ProposalState::Executed;
     proposal.executed_at = Some(current_time);
     storage::set_proposal(env, proposal_id, &proposal);
+
+    // Advance the per-type FIFO queue: remove the just-executed front entry so
+    // the next proposal of this type becomes executable (#1366). No-op for
+    // proposals that were never enqueued.
+    crate::proposal_type_queue::remove(env, proposal_id);
 
     events::emit_proposal_executed(env, proposal_id, &proposal.proposer, true);
 
@@ -1626,7 +1712,7 @@ mod cancel_proposal_tests {
 }
 
 #[cfg(test)]
-mod cancel_proposal_tests {
+mod cancel_proposal_tests_v2 {
     use super::*;
     use crate::test_helpers::fee_change_payload;
     use soroban_sdk::{testutils::Address as _, testutils::Ledger, Env};

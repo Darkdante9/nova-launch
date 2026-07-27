@@ -1,7 +1,7 @@
 use crate::events;
 use crate::storage;
 use crate::types::{
-    DynamicQuorumConfig, Error, GovernanceConfig, ParticipationRecord,
+    DynamicQuorumConfig, Error, GovernanceConfig, ParticipationRecord, ProposalState,
 };
 use soroban_sdk::{Address, Env};
 
@@ -10,6 +10,12 @@ const DEFAULT_QUORUM_PERCENT: u32 = 30;
 
 /// Default approval percentage (51%)
 const DEFAULT_APPROVAL_PERCENT: u32 = 51;
+
+/// Number of ledgers between automatic `ProposalStateSnapshot` events for a
+/// given active proposal (#1383). Off-chain analytics indexers use these
+/// periodic snapshots as fast-forward checkpoints so they don't have to
+/// replay every event from genesis to reconstruct current proposal state.
+pub const SNAPSHOT_INTERVAL_LEDGERS: u32 = 1000;
 
 /// Initialize governance configuration
 ///
@@ -340,6 +346,139 @@ fn validate_dynamic_quorum_config(config: &DynamicQuorumConfig) -> Result<(), Er
         return Err(Error::InvalidParameters);
     }
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Governance Proposal State Snapshots (#1383)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Off-chain indexers reconstruct proposal state by replaying
+// `prop_cr` / `prop_vote` / proposal-state-transition events from genesis.
+// As the event log grows this becomes increasingly expensive. To let
+// indexers "fast-forward" to a recent checkpoint, the contract periodically
+// (and on-demand) emits a `prop_snap` (`ProposalStateSnapshot`) event per
+// active proposal containing the fully accumulated vote tallies and status
+// as of a specific ledger. A consumer can load the latest snapshot for a
+// proposal and only replay events emitted after `snapshot.ledger`, while
+// still landing on state identical to a full replay from genesis.
+
+/// Compute the vote weight required to meet quorum for `proposal`, using the
+/// same token-supply-weighted formula as `timelock::finalize_proposal` so
+/// snapshots never diverge from the contract's actual quorum determination.
+///
+/// Eligible weight is the sum of all deployed tokens' total supply; if no
+/// tokens have been deployed yet this falls back to the proposal's current
+/// total vote count (matching `finalize_proposal`'s fallback).
+pub fn compute_quorum_required(env: &Env, proposal: &crate::types::Proposal) -> i128 {
+    let config = storage::get_governance_config(env);
+    let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
+
+    let token_count = storage::get_token_count(env);
+    let mut supply_sum: i128 = 0;
+    for i in 0..token_count {
+        if let Some(info) = storage::get_token_info(env, i) {
+            supply_sum = supply_sum.saturating_add(info.total_supply);
+        }
+    }
+    let total_eligible: i128 = if supply_sum > 0 {
+        supply_sum
+    } else {
+        total_votes.max(1)
+    };
+
+    total_eligible.saturating_mul(config.quorum_percent as i128) / 100
+}
+
+/// Returns true if `proposal_id` is currently "active" for snapshot purposes,
+/// i.e. it has not reached a terminal state (Succeeded, Defeated, Queued,
+/// Executed, Cancelled, Expired, Failed all stop receiving snapshots once
+/// they leave Created/Active).
+fn is_snapshot_eligible(state: ProposalState) -> bool {
+    matches!(state, ProposalState::Created | ProposalState::Active)
+}
+
+/// Emit a single `ProposalStateSnapshot` event for `proposal_id` using its
+/// current persisted vote tallies, and record the ledger at which the
+/// snapshot was taken.
+fn snapshot_one_proposal(env: &Env, proposal_id: u64, proposal: &crate::types::Proposal) {
+    let ledger = env.ledger().sequence();
+    let quorum_required = compute_quorum_required(env, proposal);
+
+    events::emit_proposal_state_snapshot(
+        env,
+        proposal_id,
+        proposal.state,
+        proposal.votes_for,
+        proposal.votes_against,
+        quorum_required,
+        ledger,
+    );
+
+    storage::set_proposal_last_snapshot_ledger(env, proposal_id, ledger);
+}
+
+/// Emit a full `ProposalStateSnapshot` event for every currently active
+/// governance proposal.
+///
+/// This is the manual/administrative entry point (`snapshot_proposals` in
+/// `TokenFactory`). It always emits a snapshot for every active proposal
+/// regardless of how many ledgers have elapsed since the last snapshot,
+/// which is useful for on-demand indexer bootstrapping.
+///
+/// # Arguments
+/// * `env`   – Contract environment.
+/// * `admin` – Admin address (must authorize and match stored admin).
+///
+/// # Returns
+/// The number of proposals snapshotted.
+///
+/// # Errors
+/// * `Error::Unauthorized` – Caller is not the admin.
+pub fn snapshot_proposals(env: &Env, admin: &Address) -> Result<u32, Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env);
+    if *admin != stored_admin {
+        return Err(Error::Unauthorized);
+    }
+
+    let mut snapshotted = 0u32;
+    let proposal_count = storage::get_proposal_count(env);
+    for id in 0..proposal_count as u64 {
+        if let Some(proposal) = storage::get_proposal(env, id) {
+            if is_snapshot_eligible(proposal.state) {
+                snapshot_one_proposal(env, id, &proposal);
+                snapshotted += 1;
+            }
+        }
+    }
+
+    Ok(snapshotted)
+}
+
+/// Automatic ledger-based snapshot trigger (#1383).
+///
+/// Called opportunistically from proposal lifecycle entry points
+/// (`create_proposal`, `vote_proposal`) so that snapshots are emitted
+/// roughly every `SNAPSHOT_INTERVAL_LEDGERS` ledgers without requiring an
+/// external cron-like service. Soroban contracts have no native scheduler,
+/// so "automatic" here means: any transaction that touches a proposal will
+/// check whether enough ledgers have elapsed since that proposal's last
+/// snapshot and, if so, emit a fresh one before returning.
+///
+/// This is a no-op (and cheap: one storage read) if the proposal is not
+/// snapshot-eligible or the interval has not yet elapsed, so it is safe to
+/// call unconditionally from any proposal-mutating code path.
+pub fn maybe_auto_snapshot(env: &Env, proposal_id: u64, proposal: &crate::types::Proposal) {
+    if !is_snapshot_eligible(proposal.state) {
+        return;
+    }
+
+    let current_ledger = env.ledger().sequence();
+    let last_snapshot = storage::get_proposal_last_snapshot_ledger(env, proposal_id);
+
+    if current_ledger.saturating_sub(last_snapshot) >= SNAPSHOT_INTERVAL_LEDGERS {
+        snapshot_one_proposal(env, proposal_id, proposal);
+    }
 }
 
 #[cfg(test)]

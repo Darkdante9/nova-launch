@@ -16,6 +16,8 @@ build/
 # Testing
 coverage/
 .nyc_output/
+.stryker-tmp*/
+reports/mutation/
 
 # IDE
 .vscode/

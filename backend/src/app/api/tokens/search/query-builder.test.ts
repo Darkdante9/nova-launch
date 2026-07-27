@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTokenSearchQuery } from "./query-builder";
+import { buildTokenSearchQuery, buildPhoneticSearchQuery, phoneticSearch } from "./query-builder";
 import type { ValidatedSearchTokensQuery } from "./schema";
 
 describe("Query Builder", () => {
@@ -131,6 +131,18 @@ describe("Query Builder", () => {
     expect(orderBy).toEqual({ name: "asc" });
   });
 
+  it("should not add OR clause when q is undefined", () => {
+    const params: ValidatedSearchTokensQuery = {
+      sortBy: "created",
+      sortOrder: "desc",
+      page: "1",
+      limit: "20",
+    };
+
+    const { where } = buildTokenSearchQuery(params);
+    expect(where.OR).toBeUndefined();
+  });
+
   it("should combine multiple filters", () => {
     const params: ValidatedSearchTokensQuery = {
       q: "token",
@@ -152,5 +164,84 @@ describe("Query Builder", () => {
     expect(where.totalSupply).toBeDefined();
     expect(where.burnCount).toBeDefined();
     expect(orderBy).toEqual({ totalBurned: "desc" });
+  });
+});
+
+describe("buildPhoneticSearchQuery", () => {
+  it("should return a query without OR (q) filter so phonetic post-filtering can be applied", () => {
+    const params: ValidatedSearchTokensQuery = {
+      q: "STELR",
+      sortBy: "created",
+      sortOrder: "desc",
+      page: "1",
+      limit: "20",
+    };
+
+    const { where } = buildPhoneticSearchQuery(params);
+    expect(where.OR).toBeUndefined();
+  });
+
+  it("should still apply other filters (creator, supply, etc.)", () => {
+    const params: ValidatedSearchTokensQuery = {
+      q: "TOKEN",
+      creator: "GCREATOR1",
+      minSupply: "500",
+      sortBy: "created",
+      sortOrder: "desc",
+      page: "1",
+      limit: "20",
+    };
+
+    const { where } = buildPhoneticSearchQuery(params);
+    expect(where.OR).toBeUndefined();
+    expect(where.creator).toBeDefined();
+    expect(where.totalSupply).toBeDefined();
+  });
+});
+
+describe("phoneticSearch", () => {
+  const makeToken = (symbol: string, name: string) => ({ symbol, name });
+
+  it("returns tokens that phonetically match the query", () => {
+    const tokens = [
+      makeToken("STLR", "Stellar"),
+      makeToken("JONES", "Jones Coin"),
+      makeToken("STELR", "Stelr Token"),
+    ];
+
+    const results = phoneticSearch(tokens, "STELR");
+    const symbols = results.map((t) => t.symbol);
+    // STLR and STELR share the same soundex code
+    expect(symbols).toContain("STLR");
+    expect(symbols).toContain("STELR");
+    expect(symbols).not.toContain("JONES");
+  });
+
+  it("ranks exact matches (score 2) before phonetic matches (score 1)", () => {
+    const tokens = [
+      makeToken("RUPERT", "Rupert Coin"),
+      makeToken("ROBERT", "Robert Token"),
+    ];
+
+    // ROBERT is an exact symbol match
+    const results = phoneticSearch(tokens, "ROBERT");
+    expect(results[0].symbol).toBe("ROBERT");
+  });
+
+  it("returns empty array when nothing matches", () => {
+    const tokens = [makeToken("SMITH", "Smith"), makeToken("JONES", "Jones")];
+    expect(phoneticSearch(tokens, "ZZZZ")).toHaveLength(0);
+  });
+
+  it("returns empty array for empty token list", () => {
+    expect(phoneticSearch([], "TEST")).toHaveLength(0);
+  });
+
+  it("matches by name field as well as symbol", () => {
+    const tokens = [makeToken("XYZ", "Robert Token")];
+    // soundex("Robert") === soundex("Rupert") === R163
+    const results = phoneticSearch(tokens, "Rupert");
+    expect(results).toHaveLength(1);
+    expect(results[0].symbol).toBe("XYZ");
   });
 });

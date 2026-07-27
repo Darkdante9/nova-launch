@@ -108,6 +108,15 @@ export class Database {
     return logs.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }
 
+  /**
+   * Test-only helper: clear all in-memory audit logs.
+   * Not used by production code paths — exists so tests can reset state
+   * between cases without reaching into private static fields.
+   */
+  static __resetAuditLogsForTests(): void {
+    this.auditLogs = [];
+  }
+
   // Initialize with sample data
   static initialize() {
     // Add sample admin user
