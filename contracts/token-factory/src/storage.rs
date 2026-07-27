@@ -56,9 +56,13 @@ pub fn bump_persistent<K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + sorob
 // ============================================================
 
 // Admin management
-pub fn get_admin(env: &Env) -> Address {
+
+/// Return the factory admin address, or `None` if `initialize` has not been
+/// called yet.  Callers in post-initialisation paths should propagate
+/// `Error::MissingAdmin` via `.ok_or(Error::MissingAdmin)?`.
+pub fn get_admin(env: &Env) -> Option<Address> {
     bump_instance(env);
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+    env.storage().instance().get(&DataKey::Admin)
 }
 
 pub fn set_admin(env: &Env, admin: &Address) {
@@ -88,8 +92,12 @@ pub fn has_pending_admin(env: &Env) -> bool {
 }
 
 // Treasury management
-pub fn get_treasury(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Treasury).unwrap()
+
+/// Return the factory treasury address, or `None` if `initialize` has not
+/// been called yet.  Callers in post-initialisation paths should propagate
+/// `Error::MissingTreasury` via `.ok_or(Error::MissingTreasury)?`.
+pub fn get_treasury(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Treasury)
 }
 
 pub fn set_treasury(env: &Env, treasury: &Address) {
@@ -147,16 +155,23 @@ pub fn get_metadata_locked_at(env: &Env) -> Option<u32> {
 }
 
 // Fee management
-pub fn get_base_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::BaseFee).unwrap()
+
+/// Return the base deployment fee in stroops, or `None` if `initialize` has
+/// not been called yet.  Callers in post-initialisation paths should propagate
+/// `Error::InvalidBaseFee` via `.ok_or(Error::InvalidBaseFee)?`.
+pub fn get_base_fee(env: &Env) -> Option<i128> {
+    env.storage().instance().get(&DataKey::BaseFee)
 }
 
 pub fn set_base_fee(env: &Env, fee: i128) {
     env.storage().instance().set(&DataKey::BaseFee, &fee);
 }
 
-pub fn get_metadata_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::MetadataFee).unwrap()
+/// Return the metadata fee in stroops, or `None` if `initialize` has not been
+/// called yet.  Callers in post-initialisation paths should propagate
+/// `Error::InvalidMetadataFee` via `.ok_or(Error::InvalidMetadataFee)?`.
+pub fn get_metadata_fee(env: &Env) -> Option<i128> {
+    env.storage().instance().get(&DataKey::MetadataFee)
 }
 
 pub fn set_metadata_fee(env: &Env, fee: i128) {
@@ -198,10 +213,22 @@ pub fn increment_token_count(env: &Env) -> Result<u32, Error> {
 // Get factory state
 pub fn get_factory_state(env: &Env) -> FactoryState {
     FactoryState {
-        admin: get_admin(env),
-        treasury: get_treasury(env),
-        base_fee: get_base_fee(env),
-        metadata_fee: get_metadata_fee(env),
+        admin: get_admin(env).unwrap_or_else(|| {
+            // Factory not yet initialised; return a zeroed sentinel.
+            // Callers that need a real admin should check `has_admin` first.
+            soroban_sdk::Address::from_contract_id(
+                env,
+                &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            )
+        }),
+        treasury: get_treasury(env).unwrap_or_else(|| {
+            soroban_sdk::Address::from_contract_id(
+                env,
+                &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            )
+        }),
+        base_fee: get_base_fee(env).unwrap_or(0),
+        metadata_fee: get_metadata_fee(env).unwrap_or(0),
         paused: is_paused(env),
     }
 }
@@ -800,7 +827,9 @@ pub fn batch_update_fees(env: &Env, base_fee: Option<i128>, metadata_fee: Option
 /// Phase 2 Optimization: Get complete admin state in single call
 /// Avoids multiple storage reads when checking authorization and state
 /// Expected savings: 2,000-3,000 CPU instructions per call
-pub fn get_admin_state(env: &Env) -> (Address, bool) {
+///
+/// Returns `None` for the admin address when the contract is uninitialised.
+pub fn get_admin_state(env: &Env) -> (Option<Address>, bool) {
     let admin = get_admin(env);
     let paused = is_paused(env);
     (admin, paused)
@@ -2108,4 +2137,75 @@ pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64
         &new_count,
     );
     Ok(())
+}
+
+// ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
+//
+// Each test calls a getter *before* `initialize()` has been invoked and
+// asserts that the result is `None` rather than a panic.
+
+#[cfg(test)]
+mod storage_getter_uninit_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+    use crate::TokenFactory;
+
+    /// Helper: register the contract without calling `initialize`.
+    fn bare_env() -> (Env, soroban_sdk::Address) {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TokenFactory);
+        (env, contract_id)
+    }
+
+    /// `get_admin` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_admin_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_admin(&env));
+        assert!(result.is_none(), "get_admin should return None before init");
+    }
+
+    /// `get_treasury` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_treasury_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_treasury(&env));
+        assert!(result.is_none(), "get_treasury should return None before init");
+    }
+
+    /// `get_base_fee` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_base_fee_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_base_fee(&env));
+        assert!(result.is_none(), "get_base_fee should return None before init");
+    }
+
+    /// `get_metadata_fee` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_metadata_fee_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_metadata_fee(&env));
+        assert!(result.is_none(), "get_metadata_fee should return None before init");
+    }
+
+    /// After `initialize()` all four getters return `Some(value)`.
+    #[test]
+    fn test_getters_return_some_after_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TokenFactory);
+        let admin = soroban_sdk::Address::generate(&env);
+        let treasury = soroban_sdk::Address::generate(&env);
+
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+        client.initialize(&admin, &treasury, &70_000_000i128, &30_000_000i128);
+
+        env.as_contract(&contract_id, || {
+            assert!(get_admin(&env).is_some());
+            assert!(get_treasury(&env).is_some());
+            assert!(get_base_fee(&env).is_some());
+            assert!(get_metadata_fee(&env).is_some());
+        });
+    }
 }

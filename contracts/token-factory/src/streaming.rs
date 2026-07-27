@@ -755,7 +755,7 @@ pub fn raise_dispute(env: &Env, caller: &Address, stream_id: u64) -> Result<(), 
 pub fn resolve_dispute(env: &Env, admin: &Address, stream_id: u64) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

@@ -108,7 +108,7 @@ pub fn record_participation(
     eligible_voters: u32,
 ) -> Result<u32, Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -228,7 +228,7 @@ pub fn get_supply_change_threshold(env: &Env) -> u32 {
 /// Set the supply change threshold percentage (admin only, must be ≤ MAX_SUPPLY_CHANGE_THRESHOLD_PCT).
 pub fn set_supply_change_threshold(env: &Env, admin: &Address, threshold_pct: u32) -> Result<(), Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -290,7 +290,7 @@ pub fn check_and_trigger_reactive_recalculation(
     if pct_change >= threshold_pct {
         // Trigger immediate recalculation by recording a fresh participation snapshot
         // that uses the current governance config as the new baseline
-        let admin = storage::get_admin(env);
+        let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
         let _ = record_participation(env, &admin, env.ledger().sequence() as u64, 50, 100)?;
 
         emit_reactive_recalculation_triggered(env, event_id, pct_change);

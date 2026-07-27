@@ -131,7 +131,8 @@ pub fn cancel_recurring_stream(
         .ok_or(Error::NotFound)?;
 
     // Only creator or admin can cancel
-    if caller != &stream.creator && caller != &storage::get_admin(env) {
+    let contract_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if caller != &stream.creator && caller != &contract_admin {
         return Err(Error::Unauthorized);
     }
 

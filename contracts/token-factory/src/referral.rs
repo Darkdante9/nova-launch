@@ -214,7 +214,7 @@ pub fn get_commission_rate_bps(env: &Env) -> u32 {
 pub fn set_commission_rate_bps(env: &Env, admin: &Address, rate_bps: u32) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -246,7 +246,7 @@ pub fn set_commission_rate_bps(env: &Env, admin: &Address, rate_bps: u32) -> Res
 pub fn payout_commission(env: &Env, admin: &Address, referrer: &Address) -> Result<i128, Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

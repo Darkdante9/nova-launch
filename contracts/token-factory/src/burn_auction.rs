@@ -97,7 +97,7 @@ pub fn create_auction(
     admin.require_auth();
 
     // Authorization
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -299,7 +299,7 @@ pub fn cancel_auction(env: &Env, caller: &Address, auction_id: u64) -> Result<()
         return Err(Error::InvalidStateTransition);
     }
 
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     let now = env.ledger().timestamp();
     let expired = now >= auction.end_time;
 
@@ -346,7 +346,7 @@ pub fn update_reserve_price(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

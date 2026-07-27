@@ -7,6 +7,14 @@
 //! Contains storage helpers for both:
 //!  - The delegation system (vote-power transfer, snapshots)
 //!  - The proposal/voting system (on-chain governance proposals)
+//!
+//! # Vote-weight resolution
+//! `cast_vote` in `lib.rs` resolves a voter's weight using on-chain state
+//! only: it first checks accumulated `VotePower` (from delegations), and
+//! falls back to the holder's raw `Balance` stored in this contract.  There
+//! is no cross-contract token-balance call; the `Balance` entries here are
+//! authoritative and are updated by `set_balance` (admin-only in the current
+//! implementation).
 
 use soroban_sdk::{Address, Env};
 use crate::types::{DataKey, DelegationRecord, VotePowerSnapshot, GovernanceProposal, ProposalVote};
@@ -201,12 +209,4 @@ pub fn has_voted(env: &Env, proposal_id: u32, voter: &Address) -> bool {
     env.storage()
         .persistent()
         .has(&DataKey::Vote(proposal_id, voter.clone()))
-}
-
-/// Query a token balance for vote-weight purposes.
-/// In production this calls the actual token contract; in tests it returns a
-/// fixed value so the proposal tests remain self-contained.
-pub fn query_token_balance(_env: &Env, token_address: &Address, holder: &Address) -> i128 {
-    let _ = (token_address, holder);
-    1000
 }

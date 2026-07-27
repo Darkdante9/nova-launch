@@ -18,7 +18,7 @@ pub fn create_staking_pool(
         return Err(Error::InvalidRewardRate);
     }
 
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if creator != admin {
         return Err(Error::Unauthorized);
     }

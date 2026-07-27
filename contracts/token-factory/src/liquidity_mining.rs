@@ -82,7 +82,7 @@ pub fn create_mining_pool(
     admin.require_auth();
 
     // Authorization check
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -370,7 +370,7 @@ pub fn claim_rewards(env: &Env, provider: &Address, pool_id: u64) -> Result<i128
 pub fn pause_mining_pool(env: &Env, admin: &Address, pool_id: u64) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -413,7 +413,7 @@ pub fn pause_mining_pool(env: &Env, admin: &Address, pool_id: u64) -> Result<(),
 pub fn resume_mining_pool(env: &Env, admin: &Address, pool_id: u64) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -457,7 +457,7 @@ pub fn resume_mining_pool(env: &Env, admin: &Address, pool_id: u64) -> Result<()
 pub fn end_mining_pool(env: &Env, admin: &Address, pool_id: u64) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -505,7 +505,7 @@ pub fn update_reward_rate(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

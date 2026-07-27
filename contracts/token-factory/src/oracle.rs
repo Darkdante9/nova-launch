@@ -89,7 +89,8 @@ pub fn configure_oracle(
     min_sources: u32,
 ) -> Result<(), Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
     if max_age_seconds == 0 {
@@ -121,7 +122,8 @@ pub fn set_oracle_authorized(
     authorized: bool,
 ) -> Result<(), Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
 

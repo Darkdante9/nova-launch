@@ -33,15 +33,15 @@ fn validate_token_params(
 }
 
 /// Calculate total fee for token creation
-fn calculate_creation_fee(env: &Env, has_metadata: bool) -> i128 {
-    let base_fee = storage::get_base_fee(env);
+fn calculate_creation_fee(env: &Env, has_metadata: bool) -> Result<i128, Error> {
+    let base_fee = storage::get_base_fee(env).ok_or(Error::InvalidBaseFee)?;
     let metadata_fee = if has_metadata {
-        storage::get_metadata_fee(env)
+        storage::get_metadata_fee(env).ok_or(Error::InvalidMetadataFee)?
     } else {
         0
     };
-    
-    base_fee + metadata_fee
+
+    base_fee.checked_add(metadata_fee).ok_or(Error::ArithmeticError)
 }
 
 /// Create a single token (internal implementation)
@@ -145,7 +145,7 @@ pub fn create_token_with_options(
     creator.require_auth();
 
     // Calculate and verify fee
-    let required_fee = calculate_creation_fee(env, metadata_uri.is_some());
+    let required_fee = calculate_creation_fee(env, metadata_uri.is_some())?;
     if fee_payment < required_fee {
         crate::events::emit_error_detail(env, Error::InsufficientFee.0, required_fee - fee_payment);
         return Err(Error::InsufficientFee);
@@ -172,8 +172,8 @@ pub fn create_token_with_options(
     crate::referral::credit_commission(env, &creator, token_index, fee_payment);
 
     // Transfer fee to treasury
-    let treasury = storage::get_treasury(env);
-    
+    let treasury = storage::get_treasury(env).ok_or(Error::MissingTreasury)?;
+
     // Validate treasury is not the creator or zero address (though generate_address handles zero usually)
     if treasury == creator {
         crate::events::emit_error_detail(env, Error::InvalidParameters.0, 100); // 100 = self treasury
@@ -247,7 +247,7 @@ pub fn batch_create_tokens(
         )?;
 
         // Calculate fee for this token
-        let token_fee = calculate_creation_fee(env, token.metadata_uri.is_some());
+        let token_fee = calculate_creation_fee(env, token.metadata_uri.is_some())?;
         total_required_fee = total_required_fee
             .checked_add(token_fee)
             .ok_or(Error::InvalidTokenParams)?;
@@ -280,8 +280,8 @@ pub fn batch_create_tokens(
     crate::events::emit_batch_tokens_created(env, &creator, tokens.len() as u32);
 
     // Transfer total fee to treasury
-    let treasury = storage::get_treasury(env);
-    
+    let treasury = storage::get_treasury(env).ok_or(Error::MissingTreasury)?;
+
     if treasury == creator {
         return Err(Error::InvalidParameters);
     }
