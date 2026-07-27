@@ -23,6 +23,12 @@ model Token {
   metadataUri   String?
   /// When false the token is hidden from the public discovery endpoint.
   isPublic      Boolean       @default(true)
+  /// Admin flag: when true the token has been flagged for review.
+  flagged       Boolean       @default(false)
+  /// Soft-delete flag: when true the token is hidden from admin listings by default.
+  deleted       Boolean       @default(false)
+  /// Arbitrary JSON metadata attached by admins (e.g. description, verified flag).
+  metadata      Json?         @default("{}")
   /// Organisational category for marketplace filtering.
   category      TokenCategory @default(OTHER)
   /// Stellar network this token was deployed on.
@@ -118,10 +124,24 @@ enum StepStatus {
 model User {
   id         String   @id @default(uuid())
   address    String   @unique
+  /// Admin role for the platform. "user" = regular user, "admin" = admin, "super_admin" = super admin.
+  role       UserRole @default(user)
+  /// Whether this user has been banned from the platform.
+  banned     Boolean  @default(false)
   createdAt  DateTime @default(now())
   lastActive DateTime @updatedAt
 
+  adminAuditLogs AdminAuditLog[]
+
   @@index([address])
+  @@index([role])
+  @@index([banned])
+}
+
+enum UserRole {
+  user
+  admin
+  super_admin
 }
 
 model Analytics {
@@ -419,7 +439,28 @@ enum CampaignStatus {
   CANCELLED
 }
 
-/// Stores durable state for long-running backend services.
+/// Audit trail for admin actions performed via the admin dashboard.
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  adminId     String
+  action      String
+  resource    String
+  resourceId  String
+  beforeState Json?
+  afterState  Json?
+  ipAddress   String
+  userAgent   String
+  timestamp   DateTime @default(now())
+
+  admin User @relation(fields: [adminId], references: [id])
+
+  @@index([adminId])
+  @@index([action])
+  @@index([resource])
+  @@index([timestamp])
+}
+
+/// Tracks durable state for long-running backend services.
 /// Used by StellarEventListener to persist the last processed event cursor
 /// so it can resume correctly after restarts without missing or replaying events.
 model IntegrationState {
