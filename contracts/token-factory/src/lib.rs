@@ -158,23 +158,22 @@ mod dividend_distribution_multi_epoch_integration_test;
 // #[cfg(test)]
 // mod metadata_versioning_property_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 
-// #[cfg(test)]
-// mod mint_concurrency_stress_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
+#[cfg(test)]
+mod mint_concurrency_stress_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_multisig_auth_fuzz_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_burn_integration_test: () = ();
-#[cfg(test)]
-const _ISOLATED_DISABLED_batch_atomicity_test: () = ();
+
 #[cfg(test)]
 const _ISOLATED_DISABLED_vault_deposit_withdraw_test: () = ();
 /// Tests for structured vault error codes / diagnostic context (#1384).
 #[cfg(test)]
 mod vault_error_test;
 
-// #[cfg(test)]
-// mod batch_atomicity_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
+#[cfg(test)]
+mod batch_atomicity_test;
 
 // #[cfg(test)]
 // mod vault_deposit_withdraw_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
