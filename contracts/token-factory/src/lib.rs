@@ -20,6 +20,7 @@ mod burn;
 mod campaign;
 #[cfg(feature = "legacy-tests")]
 mod burn_auction;
+mod commit_reveal;
 mod differential_engine;
 mod event_versions;
 mod events;
@@ -3898,10 +3899,76 @@ impl TokenFactory {
 
         Ok(())
     }
+
+    // ─── Commit-Reveal Auction Tie-Breaking (#1626) ─────────────────────────
+
+    /// Create a commit-reveal session for front-running-resistant tie-breaking.
+    ///
+    /// See `commit_reveal` module for full documentation.
+    pub fn create_commit_reveal_session(
+        env: Env,
+        admin: Address,
+        auction_id: u64,
+        commit_start: u64,
+        commit_end: u64,
+        reveal_end: u64,
+    ) -> Result<u64, Error> {
+        commit_reveal::create_commit_reveal_session(
+            env, admin, auction_id, commit_start, commit_end, reveal_end,
+        )
+    }
+
+    /// Submit a hashed commitment during the commit window.
+    pub fn submit_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        commitment: BytesN<32>,
+    ) -> Result<u32, Error> {
+        commit_reveal::submit_commitment(env, session_id, bidder, commitment)
+    }
+
+    /// Reveal the pre-image during the reveal window.
+    pub fn reveal_pre_image(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        pre_image: BytesN<32>,
+    ) -> Result<(), Error> {
+        commit_reveal::reveal_pre_image(env, session_id, bidder, pre_image)
+    }
+
+    /// Finalise the session and derive the combined tie-break seed.
+    pub fn finalise_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Result<BytesN<32>, Error> {
+        commit_reveal::finalise_session(env, session_id)
+    }
+
+    /// Get a commit-reveal session by ID.
+    pub fn get_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Option<commit_reveal::CommitRevealSession> {
+        commit_reveal::get_session(env, session_id)
+    }
+
+    /// Get a commitment record for a specific bidder.
+    pub fn get_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+    ) -> Option<commit_reveal::CommitRecord> {
+        commit_reveal::get_commitment(env, session_id, bidder)
+    }
 }
 
 #[cfg(test)]
 mod burn_auction_test;
+
+#[cfg(test)]
+mod commit_reveal_test;
 
 // Temporarily disabled - requires create_token implementation
 // #[cfg(test)]

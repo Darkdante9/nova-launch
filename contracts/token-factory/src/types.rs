@@ -689,6 +689,15 @@ pub enum DataKey {
     DistributionClaimed(u32, Address),
     /// Running total of amounts claimed for a distribution
     DistributionClaimedTotal(u32),
+    // ── Commit-reveal session storage (#1626) ──
+    /// Commit-reveal session: session_id → CommitRevealSession
+    CommitRevealSession(u64),
+    /// Total number of commit-reveal sessions created
+    CommitRevealSessionCount,
+    /// Commitment record: (session_id, index) → CommitRecord
+    CommitRecord(u64, u32),
+    /// Bidder index within a session: (session_id, bidder) → u32
+    CommitRevealBidderIndex(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -991,6 +1000,18 @@ impl Error {
     pub const DistributionAlreadyClaimed: Self = Self(103);
     pub const DistributionAlreadyReclaimed: Self = Self(104);
     pub const DistributionZeroSupply: Self = Self(105);
+    // Commit-reveal errors (#1626)
+    pub const CommitRevealSessionNotFound: Self = Self(106);
+    pub const CommitWindowClosed: Self = Self(107);
+    pub const RevealWindowClosed: Self = Self(108);
+    pub const RevealWindowOpen: Self = Self(109);
+    pub const AlreadyCommitted: Self = Self(110);
+    pub const AlreadyRevealed: Self = Self(111);
+    pub const CommitmentMismatch: Self = Self(112);
+    pub const NoBidderCommitment: Self = Self(113);
+    pub const NoValidReveals: Self = Self(114);
+    pub const AlreadyFinalised: Self = Self(115);
+    pub const TooManyBidders: Self = Self(116);
 }
 
 impl From<Error> for soroban_sdk::Error {
