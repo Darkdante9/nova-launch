@@ -40,6 +40,7 @@ import { streamReconciliationService } from "./services/streamReconciliation";
 import "./services/streamDivergenceAlerting";
 import sagaCoordinator from "./services/sagaCoordinator";
 import "./services/sagas/batchDeployGovernanceSaga";
+import { runProjectionSnapshotJob } from "./services/projectionSnapshotJob";
 
 dotenv.config();
 
@@ -241,6 +242,20 @@ const server = app.listen(PORT, async () => {
     jobQueue.scheduleRecurring("stream_reconciliation", {}, reconciliationInterval);
     console.log(
       `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
+    );
+  }
+
+  // Register and schedule periodic cross-projection snapshot capture if enabled
+  jobQueue.register("projection_snapshot", async () => {
+    await runProjectionSnapshotJob(prisma);
+  });
+  if (process.env.ENABLE_PROJECTION_SNAPSHOTS === "true") {
+    const snapshotInterval = parseInt(
+      process.env.PROJECTION_SNAPSHOT_INTERVAL_MS || "1800000" // 30 minutes default
+    );
+    jobQueue.scheduleRecurring("projection_snapshot", {}, snapshotInterval);
+    console.log(
+      `📋 Projection snapshot capture scheduled every ${snapshotInterval}ms`
     );
   }
 

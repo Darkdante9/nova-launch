@@ -503,3 +503,33 @@ model TokenGovernanceRegistration {
 
   @@index([tokenId])
 }
+
+/// Point-in-time capture of a single projection type's full state at a given
+/// ledger height (#1620). Lets the replay engine resume from the nearest
+/// usable snapshot instead of always replaying from ledger zero. See
+/// docs/PROJECTION_SNAPSHOTS.md for the payload format and versioning
+/// strategy, including why STREAM and VAULT currently snapshot the same
+/// underlying table.
+model ProjectionSnapshot {
+  id             String         @id @default(uuid())
+  projectionType ProjectionType
+  /// Ledger height this snapshot represents — the projection reflects every event up to and including this ledger.
+  ledger         Int
+  /// Full event-store paging cursor at capture time, for precise replay resumption.
+  cursor         String
+  /// Payload schema version — see docs/PROJECTION_SNAPSHOTS.md for the compatibility policy across versions.
+  formatVersion  Int            @default(1)
+  /// The captured projection rows (shape depends on projectionType — see docs/PROJECTION_SNAPSHOTS.md).
+  data           Json
+  createdAt      DateTime       @default(now())
+
+  @@unique([projectionType, ledger])
+  @@index([projectionType, ledger])
+}
+
+enum ProjectionType {
+  CAMPAIGN
+  GOVERNANCE
+  STREAM
+  VAULT
+}
