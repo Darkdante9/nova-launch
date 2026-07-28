@@ -912,6 +912,8 @@ pub enum DataKey {
     FractionalVaultByOwner(Address, u32),
     // Per-token freeze allowlist: (token_address, address)
     FrozenAddress(Address, Address),
+    FreezeCooldown(Address),
+    FreezeTimestamp(Address, Address),
     // Scheduled burns
     BurnSchedule(u64),
     BurnScheduleCount,
@@ -1258,20 +1260,7 @@ impl Error {
     pub const DistributionZeroSupply: Self = Self(105);
     // Multisig errors
     pub const DuplicateSigners: Self = Self(106);
-    // Gas-bounded batch scheduler errors (#1625)
-    /// No batch continuation is pending for this tenant.
-    pub const NoContinuationPending: Self = Self(107);
-    /// A continuation can only be resumed on a ledger after the one it last made progress on.
-    pub const ContinuationNotYetEligible: Self = Self(108);
-    /// Tenant already has an in-flight continuation of this kind; resume or wait for it to drain first.
-    pub const ContinuationAlreadyPending: Self = Self(109);
-    // Cross-contract atomic settlement errors (#1624)
-    /// No reservation exists for the given id.
-    pub const ReservationNotFound: Self = Self(110);
-    /// The reservation is not in `Prepared` state (already committed/aborted).
-    pub const ReservationNotPending: Self = Self(111);
-    /// The reservation's timeout window has not yet elapsed; cleanup is not allowed yet.
-    pub const ReservationNotYetStuck: Self = Self(112);
+    pub const FreezeCooldownActive: Self = Self(107);
 }
 
 impl From<Error> for soroban_sdk::Error {

@@ -1278,6 +1278,21 @@ impl TokenFactory {
         freeze_functions::is_frozen(&env, &token_address, &address)
     }
 
+    /// Set the unfreeze cooldown grace period for a token.
+    pub fn set_freeze_cooldown(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        cooldown_seconds: u64,
+    ) -> Result<(), Error> {
+        freeze_functions::set_freeze_cooldown(&env, &token_address, &admin, cooldown_seconds)
+    }
+
+    /// Get the unfreeze cooldown grace period for a token.
+    pub fn get_freeze_cooldown(env: Env, token_address: Address) -> u64 {
+        freeze_functions::get_freeze_cooldown(&env, &token_address)
+    }
+
     /// Burn tokens from caller's own balance
     ///
     /// Allows a token holder to permanently destroy tokens from their
