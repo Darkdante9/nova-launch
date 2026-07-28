@@ -35,6 +35,27 @@ export interface ConsistencyDiff {
 }
 
 /**
+ * Audit log entry for auto-repair actions
+ * @interface AutoRepairAuditLog
+ */
+export interface AutoRepairAuditLog {
+  /** Unique audit entry ID */
+  id: string;
+  /** Campaign ID that was repaired */
+  campaignId: number;
+  /** Field name that was repaired */
+  field: string;
+  /** Previous (incorrect) value */
+  beforeValue: any;
+  /** New (corrected) value */
+  afterValue: any;
+  /** Reason for the repair */
+  reason: string;
+  /** Timestamp of the repair */
+  timestamp: Date;
+}
+
+/**
  * Result of a consistency check across multiple campaigns
  * @interface ConsistencyCheckResult
  */
@@ -268,6 +289,120 @@ export class CampaignConsistencyChecker {
       consistent: allDiffs.length === 0,
       totalChecked: onChainStates.length,
       diffs: allDiffs,
+    };
+  }
+
+  /**
+   * Determines if a drift is safe to auto-repair.
+   *
+   * Safe repair patterns:
+   *  - `currentAmount`: on-chain amount is source of truth
+   *  - `status`: on-chain status is source of truth
+   *  - `executionCount`: on-chain count is source of truth
+   *
+   * Ambiguous (requires manual review):
+   *  - `existence`: campaign missing from backend but exists on-chain
+   *  - `targetAmount`: immutable field, drift indicates deeper issue
+   *
+   * @param diff - The consistency diff to evaluate
+   * @returns true if drift is safe to auto-repair, false if manual review needed
+   */
+  private _isSafeToRepair(diff: ConsistencyDiff): boolean {
+    const safeFields = ["currentAmount", "status", "executionCount"];
+    return safeFields.includes(diff.field);
+  }
+
+  /**
+   * Auto-repair a single drift if it's safe to do so.
+   *
+   * For safe drifts, updates the backend database with the on-chain value
+   * (the authoritative source) and records the repair in the audit trail.
+   * For ambiguous drifts, logs and escalates instead.
+   *
+   * @param diff - The consistency diff to repair
+   * @param auditLogs - Array to append repair logs to
+   * @returns true if repair was successful, false if escalated
+   */
+  async autoRepairDrift(
+    diff: ConsistencyDiff,
+    auditLogs: AutoRepairAuditLog[] = []
+  ): Promise<boolean> {
+    if (!this._isSafeToRepair(diff)) {
+      console.warn(
+        `[ConsistencyChecker] Ambiguous drift for campaign ${diff.campaignId} field ${diff.field}. Manual review required.`
+      );
+      return false;
+    }
+
+    try {
+      // Update the campaign with the on-chain value (source of truth)
+      await prisma.campaign.update({
+        where: { campaignId: diff.campaignId },
+        data: {
+          [diff.field]: diff.onChainValue,
+        },
+      });
+
+      // Record the repair in audit log
+      const auditEntry: AutoRepairAuditLog = {
+        id: `repair-${Date.now()}-${diff.campaignId}-${diff.field}`,
+        campaignId: diff.campaignId,
+        field: diff.field,
+        beforeValue: diff.backendValue,
+        afterValue: diff.onChainValue,
+        reason: "Auto-repair: synced with on-chain state",
+        timestamp: new Date(),
+      };
+
+      auditLogs.push(auditEntry);
+      console.info(
+        `[ConsistencyChecker] Auto-repaired campaign ${diff.campaignId} field ${diff.field}: ${diff.backendValue} → ${diff.onChainValue}`
+      );
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[ConsistencyChecker] Failed to repair campaign ${diff.campaignId}:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Auto-repair multiple drifts, classifying each as safe or ambiguous.
+   *
+   * Repairs all safe drifts, escalates ambiguous ones for manual review,
+   * and returns a comprehensive report.
+   *
+   * @param diffs - Array of diffs to repair
+   * @param auditLogs - Array to collect all repair actions
+   * @returns Report with repair results
+   */
+  async autoRepairDrifts(
+    diffs: ConsistencyDiff[],
+    auditLogs: AutoRepairAuditLog[] = []
+  ): Promise<{
+    repaired: ConsistencyDiff[];
+    escalated: ConsistencyDiff[];
+    auditLogs: AutoRepairAuditLog[];
+  }> {
+    const repaired: ConsistencyDiff[] = [];
+    const escalated: ConsistencyDiff[] = [];
+
+    for (const diff of diffs) {
+      const success = await this.autoRepairDrift(diff, auditLogs);
+      if (success) {
+        repaired.push(diff);
+      } else {
+        escalated.push(diff);
+      }
+    }
+
+    return {
+      repaired,
+      escalated,
+      auditLogs,
     };
   }
 
