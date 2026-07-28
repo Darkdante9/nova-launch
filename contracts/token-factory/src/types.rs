@@ -909,32 +909,15 @@ pub enum DataKey {
     DistributionClaimed(u32, Address),
     /// Running total of amounts claimed for a distribution
     DistributionClaimedTotal(u32),
-    // Cross-contract trusted caller allowlist
-    TrustedCaller(Address),
-    // Role-based access control: (token_index, address, role_discriminant)
-    TokenRole(u32, Address, u32),
-    // Cross-contract multisig
-    MultiSigConfig,
-    MultiSigProposal(u64),
-    MultiSigProposalCount,
-    MultiSigApproval(u64, Address),
-    // Asset fractionalization
-    AssetToVault(BytesN<32>),
-    OwnerFractionalVaultCount(Address),
-    FractionalVault(u64),
-    FractionalVaultCount,
-    FractionalVaultByOwner(Address, u32),
-    // Per-token freeze allowlist: (token_address, address)
-    FrozenAddress(Address, Address),
-    FreezeCooldown(Address),
-    FreezeTimestamp(Address, Address),
-    // Scheduled burns
-    BurnSchedule(u64),
-    BurnScheduleCount,
-    // Metadata update history count: token_index
-    MetadataHistoryCount(u32),
-    // AMM liquidity pools: keyed by (token_a, token_b) in creation order
-    AmmPool(Address, Address),
+    // ── Commit-reveal session storage (#1626) ──
+    /// Commit-reveal session: session_id → CommitRevealSession
+    CommitRevealSession(u64),
+    /// Total number of commit-reveal sessions created
+    CommitRevealSessionCount,
+    /// Commitment record: (session_id, index) → CommitRecord
+    CommitRecord(u64, u32),
+    /// Bidder index within a session: (session_id, bidder) → u32
+    CommitRevealBidderIndex(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1249,13 +1232,18 @@ impl Error {
     pub const DistributionAlreadyClaimed: Self = Self(103);
     pub const DistributionAlreadyReclaimed: Self = Self(104);
     pub const DistributionZeroSupply: Self = Self(105);
-    // Multisig errors
-    pub const DuplicateSigners: Self = Self(106);
-    // AMM errors (#1674)
-    pub const PoolNotFound: Self = Self(107);
-    pub const InsufficientLiquidity: Self = Self(108);
-    pub const SlippageExceeded: Self = Self(109);
-    pub const InvalidTokenPair: Self = Self(110);
+    // Commit-reveal errors (#1626)
+    pub const CommitRevealSessionNotFound: Self = Self(106);
+    pub const CommitWindowClosed: Self = Self(107);
+    pub const RevealWindowClosed: Self = Self(108);
+    pub const RevealWindowOpen: Self = Self(109);
+    pub const AlreadyCommitted: Self = Self(110);
+    pub const AlreadyRevealed: Self = Self(111);
+    pub const CommitmentMismatch: Self = Self(112);
+    pub const NoBidderCommitment: Self = Self(113);
+    pub const NoValidReveals: Self = Self(114);
+    pub const AlreadyFinalised: Self = Self(115);
+    pub const TooManyBidders: Self = Self(116);
 }
 
 impl From<Error> for soroban_sdk::Error {

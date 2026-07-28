@@ -25,6 +25,7 @@ mod amm;
 mod invariants;
 #[cfg(feature = "legacy-tests")]
 mod burn_auction;
+mod commit_reveal;
 mod differential_engine;
 mod event_versions;
 mod events;
@@ -4699,88 +4700,76 @@ impl TokenFactory {
         Ok(())
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // AMM Functions (#1674)
-    // ═══════════════════════════════════════════════════════════════════════
+    // ─── Commit-Reveal Auction Tie-Breaking (#1626) ─────────────────────────
 
-    /// Add liquidity to a constant-product pool and receive LP tokens.
+    /// Create a commit-reveal session for front-running-resistant tie-breaking.
     ///
-    /// Creates the pool on first call. Subsequent calls must supply tokens in
-    /// the same order used at creation.
-    ///
-    /// # Arguments
-    /// * `caller`   - Liquidity provider address (must authorize)
-    /// * `token_a`  - First token in the pair
-    /// * `token_b`  - Second token in the pair
-    /// * `amount_a` - Amount of `token_a` to deposit (> 0)
-    /// * `amount_b` - Amount of `token_b` to deposit (> 0)
-    ///
-    /// # Returns
-    /// LP tokens minted to the caller.
-    pub fn add_liquidity(
+    /// See `commit_reveal` module for full documentation.
+    pub fn create_commit_reveal_session(
         env: Env,
-        caller: Address,
-        token_a: Address,
-        token_b: Address,
-        amount_a: i128,
-        amount_b: i128,
-    ) -> Result<i128, Error> {
-        amm::add_liquidity(&env, &caller, &token_a, &token_b, amount_a, amount_b)
+        admin: Address,
+        auction_id: u64,
+        commit_start: u64,
+        commit_end: u64,
+        reveal_end: u64,
+    ) -> Result<u64, Error> {
+        commit_reveal::create_commit_reveal_session(
+            env, admin, auction_id, commit_start, commit_end, reveal_end,
+        )
     }
 
-    /// Remove liquidity by burning LP tokens and receiving both underlying tokens back.
-    ///
-    /// # Arguments
-    /// * `caller`    - LP token holder (must authorize)
-    /// * `token_a`   - First token of the pair (creation order)
-    /// * `token_b`   - Second token of the pair (creation order)
-    /// * `lp_amount` - LP tokens to burn (> 0)
-    ///
-    /// # Returns
-    /// `(amount_a, amount_b)` returned to the caller.
-    pub fn remove_liquidity(
+    /// Submit a hashed commitment during the commit window.
+    pub fn submit_commitment(
         env: Env,
-        caller: Address,
-        token_a: Address,
-        token_b: Address,
-        lp_amount: i128,
-    ) -> Result<(i128, i128), Error> {
-        amm::remove_liquidity(&env, &caller, &token_a, &token_b, lp_amount)
+        session_id: u64,
+        bidder: Address,
+        commitment: BytesN<32>,
+    ) -> Result<u32, Error> {
+        commit_reveal::submit_commitment(env, session_id, bidder, commitment)
     }
 
-    /// Swap tokens using the constant-product formula `x*y=k`.
-    ///
-    /// # Arguments
-    /// * `caller`         - Swapper address (must authorize)
-    /// * `token_in`       - Token being sold
-    /// * `token_out`      - Token being bought
-    /// * `amount_in`      - Amount to sell (> 0)
-    /// * `min_amount_out` - Minimum acceptable output (slippage guard)
-    ///
-    /// # Returns
-    /// Actual amount of `token_out` received.
-    pub fn swap(
+    /// Reveal the pre-image during the reveal window.
+    pub fn reveal_pre_image(
         env: Env,
-        caller: Address,
-        token_in: Address,
-        token_out: Address,
-        amount_in: i128,
-        min_amount_out: i128,
-    ) -> Result<i128, Error> {
-        amm::swap(&env, &caller, &token_in, &token_out, amount_in, min_amount_out)
+        session_id: u64,
+        bidder: Address,
+        pre_image: BytesN<32>,
+    ) -> Result<(), Error> {
+        commit_reveal::reveal_pre_image(env, session_id, bidder, pre_image)
     }
 
-    /// Return the current spot price of `token_a` in terms of `token_b`,
-    /// scaled by `PRICE_PRECISION` (1e9).
-    ///
-    /// Divide the result by `amm::PRICE_PRECISION` for the human-readable ratio.
-    pub fn get_price(env: Env, token_a: Address, token_b: Address) -> Result<i128, Error> {
-        amm::get_price(&env, &token_a, &token_b)
+    /// Finalise the session and derive the combined tie-break seed.
+    pub fn finalise_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Result<BytesN<32>, Error> {
+        commit_reveal::finalise_session(env, session_id)
+    }
+
+    /// Get a commit-reveal session by ID.
+    pub fn get_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Option<commit_reveal::CommitRevealSession> {
+        commit_reveal::get_session(env, session_id)
+    }
+
+    /// Get a commitment record for a specific bidder.
+    pub fn get_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+    ) -> Option<commit_reveal::CommitRecord> {
+        commit_reveal::get_commitment(env, session_id, bidder)
     }
 }
 
 #[cfg(test)]
-const _ISOLATED_DISABLED_burn_auction_test: () = ();
+mod burn_auction_test;
+
+#[cfg(test)]
+mod commit_reveal_test;
+
 // Temporarily disabled - requires create_token implementation
 // #[cfg(test)]
 // mod test;
