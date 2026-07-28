@@ -27,7 +27,8 @@
     "type-check": "tsc --noEmit",
     "docs:generate": "tsx scripts/generate-openapi.ts && tsx scripts/generate-docs.ts",
     "generate:event-types": "tsx scripts/generate-event-types.ts",
-    "incident:test": "vitest run --config ../monitoring/pagerduty/vitest.config.ts ../monitoring/pagerduty/incident-response.test.ts"
+    "incident:test": "vitest run --config ../monitoring/pagerduty/vitest.config.ts ../monitoring/pagerduty/incident-response.test.ts",
+    "test:health-monitor": "vitest run --root ../monitoring/health-checks"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^9.1.0",
