@@ -23,6 +23,7 @@ import {
   ClaimSchema,
   ListPoolsSchema,
 } from "../services/dividendService";
+import { authenticateAdmin } from "../middleware/auth";
 
 const router = Router();
 
@@ -182,7 +183,7 @@ router.get("/claimable", async (req: Request, res: Response) => {
  * Verify snapshot consistency for a pool (admin endpoint).
  * Checks that holder snapshots sum to the expected total supply.
  */
-router.get("/pools/:poolId/consistency", async (req: Request, res: Response) => {
+router.get("/pools/:poolId/consistency", authenticateAdmin, async (req: Request, res: Response) => {
   try {
     const result = await verifySnapshotConsistency(req.params.poolId);
     return res.json({ success: true, data: result });
