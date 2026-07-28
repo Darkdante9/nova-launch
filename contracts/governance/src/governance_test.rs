@@ -304,6 +304,53 @@ fn snapshot_not_found_returns_error() {
     c.get_snapshot_power(&alice, &9999_u32);
 }
 
+// ─── [SNAP-AUTH] Snapshot authorization — issue #1685 ─────────────────────
+
+// Regression: take_snapshot must reject calls that lack the target address's
+// own authorization. Without this guard any caller could force a persistent-
+// storage write for an arbitrary third-party address (storage-spam griefing).
+#[test]
+#[should_panic]
+fn snapshot_requires_address_auth_third_party_caller_rejected() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let alice = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    fund(&env, &contract_id, &admin, &alice, 100_i128);
+
+    // Env does NOT mock auths here, so the call will only succeed if the
+    // required auth for `alice` is actually provided. `attacker` is not
+    // `alice`, so the Soroban auth framework rejects the invocation.
+    let env2 = Env::default();
+    // Re-deploy without mock_all_auths so auth is enforced.
+    let contract_id2 = env2.register_contract(None, GovernanceContract);
+    let c2 = GovernanceContractClient::new(&env2, &contract_id2);
+    let admin2 = Address::generate(&env2);
+    c2.initialize(&admin2, &1_000_000_i128);
+
+    let victim = Address::generate(&env2);
+    // No auth mocked — this must panic because victim has not authorized the call.
+    c2.take_snapshot(&victim);
+}
+
+// Regression: a legitimately self-authorized snapshot call must still succeed.
+#[test]
+fn snapshot_succeeds_when_address_authorizes_itself() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let alice = Address::generate(&env);
+
+    fund(&env, &contract_id, &admin, &alice, 400_i128);
+
+    // mock_all_auths is active (set in setup()), so alice's auth is satisfied.
+    let ledger = env.ledger().sequence();
+    c.take_snapshot(&alice);
+
+    let power = c.get_snapshot_power(&alice, &ledger);
+    assert_eq!(power, 400_i128, "authorized snapshot must record correct power");
+}
+
 // ─── [BAL] Balance management ─────────────────────────────────────────────
 
 #[test]
