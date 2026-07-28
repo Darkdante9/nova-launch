@@ -33,6 +33,7 @@ model Token {
   burnRecords    BurnRecord[]
   analytics      Analytics[]
   dividendPools  DividendPool[]
+  governanceRegistration TokenGovernanceRegistration?
 
   @@index([address])
   @@index([creator])
@@ -447,4 +448,88 @@ model IPFSPin {
   @@index([pinned])
   @@index([failureCount])
   @@index([tokenAddress])
+}
+
+/// Durable state for the SagaCoordinator (#1621). Persists the step index and
+/// per-step context of a multi-step, cross-contract operation so an in-flight
+/// saga survives a process restart and can be resumed forward or compensated
+/// (rolled back in reverse step order) correctly rather than being lost.
+model SagaExecution {
+  id                   String                @id @default(uuid())
+  /// Identifies which saga definition this execution is running (e.g. "batch_deploy_with_governance_registration").
+  sagaType             String
+  status               SagaStatus            @default(RUNNING)
+  /// Index of the next step to execute (forward) or the step compensation is currently undoing.
+  currentStepIndex     Int                   @default(0)
+  stepCount            Int
+  /// Arbitrary saga-specific input/intermediate state (step results accumulate here as the saga progresses).
+  context              Json
+  compensationStatus   SagaCompensationStatus @default(NOT_STARTED)
+  /// Highest step index compensation has completed undoing so far — makes compensation resumable/idempotent.
+  compensatedStepIndex Int?
+  error                String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  completedAt          DateTime?
+
+  @@index([status])
+  @@index([sagaType])
+}
+
+enum SagaStatus {
+  RUNNING
+  COMPLETED
+  COMPENSATING
+  COMPENSATED
+  FAILED
+}
+
+enum SagaCompensationStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+/// Marks a deployed token as registered for governance participation (voting
+/// eligibility). Written by the batch-deploy-plus-governance-registration saga
+/// as its second step; deleted by that step's compensation if a later step
+/// in the same saga fails and the whole operation must be undone.
+model TokenGovernanceRegistration {
+  id           String   @id @default(uuid())
+  tokenId      String   @unique
+  registeredAt DateTime @default(now())
+
+  token Token @relation(fields: [tokenId], references: [id])
+
+  @@index([tokenId])
+}
+
+/// Point-in-time capture of a single projection type's full state at a given
+/// ledger height (#1620). Lets the replay engine resume from the nearest
+/// usable snapshot instead of always replaying from ledger zero. See
+/// docs/PROJECTION_SNAPSHOTS.md for the payload format and versioning
+/// strategy, including why STREAM and VAULT currently snapshot the same
+/// underlying table.
+model ProjectionSnapshot {
+  id             String         @id @default(uuid())
+  projectionType ProjectionType
+  /// Ledger height this snapshot represents — the projection reflects every event up to and including this ledger.
+  ledger         Int
+  /// Full event-store paging cursor at capture time, for precise replay resumption.
+  cursor         String
+  /// Payload schema version — see docs/PROJECTION_SNAPSHOTS.md for the compatibility policy across versions.
+  formatVersion  Int            @default(1)
+  /// The captured projection rows (shape depends on projectionType — see docs/PROJECTION_SNAPSHOTS.md).
+  data           Json
+  createdAt      DateTime       @default(now())
+
+  @@unique([projectionType, ledger])
+  @@index([projectionType, ledger])
+}
+
+enum ProjectionType {
+  CAMPAIGN
+  GOVERNANCE
+  STREAM
+  VAULT
 }

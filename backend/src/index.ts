@@ -38,6 +38,9 @@ import websocketService from "./services/websocket";
 import jobQueue from "./services/jobQueue";
 import { streamReconciliationService } from "./services/streamReconciliation";
 import "./services/streamDivergenceAlerting";
+import sagaCoordinator from "./services/sagaCoordinator";
+import "./services/sagas/batchDeployGovernanceSaga";
+import { runProjectionSnapshotJob } from "./services/projectionSnapshotJob";
 
 dotenv.config();
 
@@ -242,11 +245,28 @@ const server = app.listen(PORT, async () => {
     );
   }
 
+  // Register and schedule periodic cross-projection snapshot capture if enabled
+  jobQueue.register("projection_snapshot", async () => {
+    await runProjectionSnapshotJob(prisma);
+  });
+  if (process.env.ENABLE_PROJECTION_SNAPSHOTS === "true") {
+    const snapshotInterval = parseInt(
+      process.env.PROJECTION_SNAPSHOT_INTERVAL_MS || "1800000" // 30 minutes default
+    );
+    jobQueue.scheduleRecurring("projection_snapshot", {}, snapshotInterval);
+    console.log(
+      `📋 Projection snapshot capture scheduled every ${snapshotInterval}ms`
+    );
+  }
+
   // Attach WebSocket server for live event streaming
   websocketService.attach(server);
 
   // Attach GraphQL subscriptions (graphql-ws) on the /graphql WS path
   attachGraphqlSubscriptions(server);
+
+  // Resume or compensate any sagas left in-flight by a prior process restart
+  await sagaCoordinator.recoverInterruptedSagas();
 
   // Start event listener only after server (and DB) are ready
   if (process.env.ENABLE_EVENT_LISTENER === "true") {
