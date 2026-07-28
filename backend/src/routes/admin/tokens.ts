@@ -7,12 +7,17 @@ import { successResponse, errorResponse } from "../../utils/response";
 
 const router = Router();
 
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
+
 // Validation schemas
 const tokenFilterSchema = z.object({
   flagged: z.enum(["true", "false"]).optional(),
   deleted: z.enum(["true", "false"]).optional(),
   creator: z.string().optional(),
   search: z.string().optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+  offset: z.string().regex(/^\d+$/).optional(),
 });
 
 const tokenUpdateSchema = z.object({
@@ -50,10 +55,23 @@ router.get(
         );
       }
 
+      const limit = Math.min(
+        filters.limit ? parseInt(filters.limit) : DEFAULT_LIMIT,
+        MAX_LIMIT
+      );
+      const offset = filters.offset ? parseInt(filters.offset) : 0;
+      const total = tokens.length;
+      tokens = tokens.slice(offset, offset + limit);
+
       res.json(
         successResponse({
           tokens,
-          total: tokens.length,
+          pagination: {
+            total,
+            limit,
+            offset,
+            hasMore: offset + limit < total,
+          },
         })
       );
     } catch (error) {
