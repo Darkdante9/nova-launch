@@ -22,8 +22,20 @@ vi.mock("../services/dividendService", async (importOriginal) => {
     listDividendPools: vi.fn(),
     getDividendPool: vi.fn(),
     cancelDividendPool: vi.fn(),
+    verifySnapshotConsistency: vi.fn(),
   };
 });
+
+// ─── Mock auth middleware ─────────────────────────────────────────────────────
+
+const mockAuthenticateAdmin = vi.fn((_req: any, _res: any, next: any) => {
+  next();
+});
+
+vi.mock("../middleware/auth", () => ({
+  authenticateAdmin: (req: any, res: any, next: any) =>
+    mockAuthenticateAdmin(req, res, next),
+}));
 
 import {
   createDividendPool,
@@ -32,6 +44,7 @@ import {
   listDividendPools,
   getDividendPool,
   cancelDividendPool,
+  verifySnapshotConsistency,
 } from "../services/dividendService";
 
 // ─── App setup ───────────────────────────────────────────────────────────────
@@ -356,6 +369,56 @@ describe("GET /api/dividends/claimable", () => {
       `/api/dividends/claimable?poolId=${POOL_ID}&claimant=GABC`
     );
 
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── GET /api/dividends/pools/:poolId/consistency (admin) ────────────────────
+
+describe("GET /api/dividends/pools/:poolId/consistency", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockAuthenticateAdmin.mockImplementationOnce((_req, res, _next) => {
+      return res.status(401).json({ error: "Authentication required" });
+    });
+
+    const res = await request(app).get(
+      `/api/dividends/pools/${POOL_ID}/consistency`
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("calls authenticateAdmin before the handler", async () => {
+    vi.mocked(verifySnapshotConsistency).mockResolvedValue({
+      consistent: true,
+      poolId: POOL_ID,
+    } as any);
+
+    await request(app).get(`/api/dividends/pools/${POOL_ID}/consistency`);
+    expect(mockAuthenticateAdmin).toHaveBeenCalled();
+  });
+
+  it("returns 200 with consistency result for authenticated admin", async () => {
+    const mockResult = { consistent: true, poolId: POOL_ID, delta: "0" };
+    vi.mocked(verifySnapshotConsistency).mockResolvedValue(mockResult as any);
+
+    const res = await request(app).get(
+      `/api/dividends/pools/${POOL_ID}/consistency`
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toMatchObject(mockResult);
+  });
+
+  it("returns 404 when pool is not found", async () => {
+    vi.mocked(verifySnapshotConsistency).mockRejectedValue(
+      new Error("Pool not found")
+    );
+
+    const res = await request(app).get(
+      `/api/dividends/pools/${POOL_ID}/consistency`
+    );
     expect(res.status).toBe(404);
   });
 });
