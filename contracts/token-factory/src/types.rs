@@ -185,6 +185,80 @@ pub struct PreflightItemResult {
     pub error_code: u32,
 }
 
+/// Outcome of a single `schedule_batch_reveal` / `resume_batch_reveal` /
+/// `schedule_batch_settle` / `resume_batch_settle` call.
+///
+/// A batch is only ever split at item boundaries — `executed_count` items
+/// were fully committed to storage, `remaining_count` were not touched at
+/// all. `continuation_pending` is `true` when `remaining_count > 0`, in
+/// which case the tenant must call the matching `resume_*` entry point on a
+/// later ledger to make further progress.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchScheduleResult {
+    pub executed_count: u32,
+    pub remaining_count: u32,
+    pub continuation_pending: bool,
+}
+
+/// Pending, gas-budget-deferred continuation of a `batch_reveal` call.
+///
+/// Persists the still-unexecuted tail of the batch so it can resume on a
+/// later ledger without re-validating or re-executing already-committed
+/// items.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevealBatchContinuation {
+    pub creator: Address,
+    pub remaining_tokens: Vec<TokenCreationParams>,
+    /// Fee payment remaining to cover `remaining_tokens`.
+    pub remaining_fee_payment: i128,
+    /// Ledger sequence this continuation last executed a chunk on.
+    pub last_activity_ledger: u32,
+}
+
+/// Lifecycle state of a cross-contract settlement `Reservation` (#1624).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationStatus {
+    /// Amount reserved against max-supply headroom; not yet minted.
+    Prepared = 0,
+    /// Reservation finalized — tokens minted to `recipient`.
+    Committed = 1,
+    /// Reservation released without minting (explicit abort, failed commit,
+    /// or timeout cleanup).
+    Aborted = 2,
+}
+
+/// A two-phase-commit reservation for a cross-contract treasury
+/// disbursement, created by `prepare_settlement` and resolved by exactly one
+/// of `commit_settlement`, `abort_settlement`, or `cleanup_stuck_reservation`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reservation {
+    pub id: u64,
+    /// Governance-side proposal id this reservation was created for.
+    pub proposal_id: u64,
+    pub recipient: Address,
+    pub token_index: u32,
+    pub amount: i128,
+    pub status: ReservationStatus,
+    /// Ledger sequence the reservation was created (`prepare`d) on.
+    pub created_ledger: u32,
+}
+
+/// Pending, gas-budget-deferred continuation of a `batch_settle` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettleBatchContinuation {
+    pub creator: Address,
+    pub token_index: u32,
+    pub remaining_recipients: Vec<(Address, i128)>,
+    pub minted_so_far: i128,
+    /// Ledger sequence this continuation last executed a chunk on.
+    pub last_activity_ledger: u32,
+}
+
 /// Timelock configuration
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -843,6 +917,31 @@ pub enum DataKey {
     BurnScheduleCount,
     // Metadata update history count: token_index
     MetadataHistoryCount(u32),
+    // Cross-contract atomic settlement (#1624)
+    /// Auto-incrementing counter for reservation ids.
+    NextReservationId,
+    /// A prepare/commit/abort reservation, keyed by its id.
+    Reservation(u64),
+    /// Sum of amounts currently reserved (prepared but not yet committed or
+    /// aborted) against a token's max-supply headroom: token_index -> total.
+    ReservedTotal(u32),
+    /// Admin-configurable timeout (in ledgers) after which a reservation
+    /// stuck in `Prepared` may be force-released via `cleanup_stuck_reservation`.
+    ReservationTimeoutLedgers,
+    // Gas-bounded batch scheduler (#1625)
+    /// Configurable per-ledger gas budget (CPU instructions) shared by all tenants.
+    BatchGasBudget,
+    /// Ordered set of tenant addresses with a pending batch continuation,
+    /// used for round-robin fair-share scheduling.
+    FairShareQueue,
+    /// Gas already consumed by a tenant on a given ledger: (tenant, ledger_seq).
+    TenantLedgerGasUsed(Address, u32),
+    /// Total gas consumed by all tenants on a given ledger.
+    LedgerGasUsed(u32),
+    /// Pending `batch_reveal` continuation for a tenant.
+    RevealContinuation(Address),
+    /// Pending `batch_settle` continuation for a tenant.
+    SettleContinuation(Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1159,6 +1258,20 @@ impl Error {
     pub const DistributionZeroSupply: Self = Self(105);
     // Multisig errors
     pub const DuplicateSigners: Self = Self(106);
+    // Gas-bounded batch scheduler errors (#1625)
+    /// No batch continuation is pending for this tenant.
+    pub const NoContinuationPending: Self = Self(107);
+    /// A continuation can only be resumed on a ledger after the one it last made progress on.
+    pub const ContinuationNotYetEligible: Self = Self(108);
+    /// Tenant already has an in-flight continuation of this kind; resume or wait for it to drain first.
+    pub const ContinuationAlreadyPending: Self = Self(109);
+    // Cross-contract atomic settlement errors (#1624)
+    /// No reservation exists for the given id.
+    pub const ReservationNotFound: Self = Self(110);
+    /// The reservation is not in `Prepared` state (already committed/aborted).
+    pub const ReservationNotPending: Self = Self(111);
+    /// The reservation's timeout window has not yet elapsed; cleanup is not allowed yet.
+    pub const ReservationNotYetStuck: Self = Self(112);
 }
 
 impl From<Error> for soroban_sdk::Error {

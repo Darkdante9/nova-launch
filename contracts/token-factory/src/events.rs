@@ -1817,3 +1817,80 @@ pub fn emit_multisig_executed(env: &Env, proposal_id: u64, executor: &Address) {
     env.events()
         .publish((symbol_short!("ms_exe_v1"), proposal_id), (executor,));
 }
+
+// ── Gas-bounded batch scheduler (#1625) ─────────────────────────────────────
+
+/// Emitted when a scheduled batch is split by the gas-bounded scheduler: a
+/// chunk of `executed_count` items committed now, `remaining_count` deferred
+/// to a continuation the tenant can resume on a later ledger.
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_sch1
+pub fn emit_batch_scheduled(env: &Env, tenant: &Address, executed_count: u32, remaining_count: u32) {
+    env.events().publish(
+        (symbol_short!("bch_sch1"), tenant.clone()),
+        (executed_count, remaining_count),
+    );
+}
+
+/// Emitted when a batch continuation finishes draining (its last chunk committed).
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_don1
+pub fn emit_batch_continuation_completed(env: &Env, tenant: &Address) {
+    let ledger = env.ledger().sequence();
+    env.events()
+        .publish((symbol_short!("bch_don1"), tenant.clone()), (ledger,));
+}
+
+// ── Cross-contract atomic settlement (#1624) ────────────────────────────────
+
+/// Emitted when a reservation is created by `prepare_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_prep1
+pub fn emit_settlement_prepared(
+    env: &Env,
+    reservation_id: u64,
+    proposal_id: u64,
+    token_index: u32,
+    recipient: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("stl_prep1"), reservation_id),
+        (proposal_id, token_index, recipient.clone(), amount),
+    );
+}
+
+/// Emitted when a reservation is finalized (minted) by `commit_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_cmt1
+pub fn emit_settlement_committed(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_cmt1"), reservation_id), (proposal_id,));
+}
+
+/// Emitted when a reservation is released without minting — via an explicit
+/// `abort_settlement` call (`reason_code == 0`) or because
+/// `commit_settlement` itself failed (`reason_code` is the mint error code).
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_abrt1
+pub fn emit_settlement_aborted(env: &Env, reservation_id: u64, proposal_id: u64, reason_code: u32) {
+    env.events().publish(
+        (symbol_short!("stl_abrt1"), reservation_id),
+        (proposal_id, reason_code),
+    );
+}
+
+/// Emitted when a stuck (never committed or aborted) reservation is
+/// force-released by `cleanup_stuck_reservation` after its timeout window.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_tmo1
+pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
+}
