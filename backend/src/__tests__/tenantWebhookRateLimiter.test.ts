@@ -405,8 +405,8 @@ describe("TenantWebhookRateLimiter", () => {
       expect(partialResolved).toBe(false);
       expect(limiter.getQueueLength(tenant)).toBe(1);
 
-      // Now advance the remaining time to complete one full token (total 1000 ms).
-      await vi.advanceTimersByTimeAsync(600);
+      // Now advance to 1100ms total to let drain loop fire and deliver the token
+      await vi.advanceTimersByTimeAsync(1100);
       expect(partialResolved).toBe(true);
 
       await pending;
@@ -580,6 +580,87 @@ describe("TenantWebhookRateLimiter", () => {
 
       limiter.setTenantOverride(tenant, { ratePerMinute: 100, burstCapacity: 3 });
       expect(limiter.getAvailableTokens(tenant)).toBeLessThanOrEqual(3);
+
+      limiter.destroy();
+    });
+
+    it("cache invalidation on override update: raised override allows higher throughput", async () => {
+      vi.useFakeTimers();
+      const limiter = new TenantWebhookRateLimiter({
+        ratePerMinute: 60,
+        burstCapacity: 2,
+      });
+      const tenant = "vip-upgrade-tenant";
+
+      await limiter.acquire(tenant);
+      await limiter.acquire(tenant);
+      expect(limiter.getAvailableTokens(tenant)).toBeLessThan(1);
+
+      limiter.setTenantOverride(tenant, { ratePerMinute: 240, burstCapacity: 10 });
+      const newConfig = limiter.getConfigForTenant(tenant);
+      expect(newConfig.ratePerMinute).toBe(240);
+      expect(newConfig.burstCapacity).toBe(10);
+
+      // At 240/min, that's 4 tokens/sec, so 500ms gives ~2 tokens
+      await vi.advanceTimersByTimeAsync(500);
+      expect(limiter.getAvailableTokens(tenant)).toBeGreaterThan(1);
+
+      limiter.destroy();
+    });
+
+    it("override-absent falls back to default limit for unconfigured tenants", () => {
+      const limiter = new TenantWebhookRateLimiter({
+        ratePerMinute: 100,
+        burstCapacity: 20,
+      });
+
+      const config = limiter.getConfigForTenant("unregistered-tenant");
+      expect(config.ratePerMinute).toBe(100);
+      expect(config.burstCapacity).toBe(20);
+
+      limiter.destroy();
+    });
+
+    it("clearTenantOverride invalidates cache and restores default throughput", async () => {
+      vi.useFakeTimers();
+      const limiter = new TenantWebhookRateLimiter({
+        ratePerMinute: 60,
+        burstCapacity: 5,
+      });
+      const tenant = "downgrade-tenant";
+
+      limiter.setTenantOverride(tenant, { ratePerMinute: 240, burstCapacity: 10 });
+      expect(limiter.getAvailableTokens(tenant)).toBe(10);
+
+      limiter.clearTenantOverride(tenant);
+      const restoredConfig = limiter.getConfigForTenant(tenant);
+      expect(restoredConfig.ratePerMinute).toBe(60);
+      expect(restoredConfig.burstCapacity).toBe(5);
+
+      limiter.destroy();
+    });
+
+    it("multiple tenants can have independent overrides without interference", async () => {
+      const limiter = new TenantWebhookRateLimiter({
+        ratePerMinute: 100,
+        burstCapacity: 20,
+      });
+
+      limiter.setTenantOverride("vip-a", { ratePerMinute: 1000, burstCapacity: 100 });
+      limiter.setTenantOverride("vip-b", { ratePerMinute: 500, burstCapacity: 50 });
+
+      expect(limiter.getConfigForTenant("vip-a")).toEqual({
+        ratePerMinute: 1000,
+        burstCapacity: 100,
+      });
+      expect(limiter.getConfigForTenant("vip-b")).toEqual({
+        ratePerMinute: 500,
+        burstCapacity: 50,
+      });
+      expect(limiter.getConfigForTenant("regular")).toEqual({
+        ratePerMinute: 100,
+        burstCapacity: 20,
+      });
 
       limiter.destroy();
     });
