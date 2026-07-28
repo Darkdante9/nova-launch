@@ -165,6 +165,77 @@ pub fn resume_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<
     Ok(())
 }
 
+/// Cancel a campaign
+///
+/// Permanently cancels a campaign, transitioning it to the Cancelled terminal
+/// state. Only the campaign owner or admin can cancel a campaign. Cancellation
+/// is accepted from Active or Paused; it is rejected from any terminal state
+/// (Completed, Cancelled, Expired).
+///
+/// # State Transitions
+/// Active -> Cancelled
+/// Paused -> Cancelled
+///
+/// # Arguments
+/// * `env` - The contract environment
+/// * `caller` - Address requesting cancellation (must be owner or admin)
+/// * `campaign_id` - ID of the campaign to cancel
+///
+/// # Returns
+/// * `Ok(())` - Campaign successfully cancelled
+/// * `Err(Error::CampaignNotFound)` - Campaign does not exist
+/// * `Err(Error::Unauthorized)` - Caller is not owner or admin
+/// * `Err(Error::CampaignCompleted)` - Cannot cancel a completed campaign
+/// * `Err(Error::CampaignCancelled)` - Campaign is already cancelled
+/// * `Err(Error::InvalidStateTransition)` - Invalid state transition
+///
+/// # Examples
+/// ```ignore
+/// cancel_campaign(&env, &admin, 1)?;
+/// ```
+pub fn cancel_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<(), Error> {
+    caller.require_auth();
+
+    // Load campaign
+    let mut campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
+
+    // Authorization check: must be owner or admin
+    let admin = storage::get_admin(env);
+    if *caller != campaign.owner && *caller != admin {
+        return Err(Error::Unauthorized);
+    }
+
+    // State transition validation — reject terminal states
+    match campaign.status {
+        CampaignStatus::Active | CampaignStatus::Paused => {
+            // Valid transitions: Active -> Cancelled, Paused -> Cancelled
+            campaign.status = CampaignStatus::Cancelled;
+        }
+        CampaignStatus::Completed => {
+            // Terminal state: cannot cancel a completed campaign
+            return Err(Error::CampaignCompleted);
+        }
+        CampaignStatus::Cancelled => {
+            // Already in terminal state
+            return Err(Error::CampaignCancelled);
+        }
+        CampaignStatus::Expired => {
+            // Terminal state: cannot cancel an expired campaign
+            return Err(Error::CampaignExpiredError);
+        }
+    }
+
+    let budget_remaining = campaign.budget.saturating_sub(campaign.spent);
+
+    // Persist state change
+    storage::set_campaign(env, campaign_id, &campaign);
+
+    // Emit event consistent with other campaign state-change functions
+    events::emit_campaign_cancelled(env, campaign_id, caller, budget_remaining);
+
+    Ok(())
+}
+
 /// Finalize a campaign, transitioning it to Completed.
 ///
 /// Only the campaign owner or admin may finalize. The campaign must be Active
@@ -384,6 +455,98 @@ mod tests {
             storage::set_campaign(env, 1, &campaign);
 
             let result = pause_campaign(env, &attacker, 1);
+            assert_eq!(result, Err(Error::Unauthorized));
+        });
+    }
+
+    // ── cancel_campaign tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_cancel_active_campaign() {
+        let test_env = TestEnv::new();
+        let env = &test_env.env;
+        let admin = &test_env.admin;
+
+        env.as_contract(&env.current_contract_address(), || {
+            let campaign = make_campaign(env, admin, CampaignStatus::Active);
+            storage::set_campaign(env, 1, &campaign);
+
+            let result = cancel_campaign(env, admin, 1);
+            assert!(result.is_ok(), "cancel from Active should succeed");
+
+            let updated = storage::get_campaign(env, 1).unwrap();
+            assert_eq!(updated.status, CampaignStatus::Cancelled);
+        });
+    }
+
+    #[test]
+    fn test_cancel_paused_campaign() {
+        let test_env = TestEnv::new();
+        let env = &test_env.env;
+        let admin = &test_env.admin;
+
+        env.as_contract(&env.current_contract_address(), || {
+            let campaign = make_campaign(env, admin, CampaignStatus::Paused);
+            storage::set_campaign(env, 1, &campaign);
+
+            let result = cancel_campaign(env, admin, 1);
+            assert!(result.is_ok(), "cancel from Paused should succeed");
+
+            let updated = storage::get_campaign(env, 1).unwrap();
+            assert_eq!(updated.status, CampaignStatus::Cancelled);
+        });
+    }
+
+    #[test]
+    fn test_cancel_completed_campaign_fails() {
+        let test_env = TestEnv::new();
+        let env = &test_env.env;
+        let admin = &test_env.admin;
+
+        env.as_contract(&env.current_contract_address(), || {
+            let campaign = make_campaign(env, admin, CampaignStatus::Completed);
+            storage::set_campaign(env, 1, &campaign);
+
+            let result = cancel_campaign(env, admin, 1);
+            assert_eq!(
+                result,
+                Err(Error::CampaignCompleted),
+                "cancel from Completed (terminal) must be rejected"
+            );
+        });
+    }
+
+    #[test]
+    fn test_cancel_already_cancelled_campaign_fails() {
+        let test_env = TestEnv::new();
+        let env = &test_env.env;
+        let admin = &test_env.admin;
+
+        env.as_contract(&env.current_contract_address(), || {
+            let campaign = make_campaign(env, admin, CampaignStatus::Cancelled);
+            storage::set_campaign(env, 1, &campaign);
+
+            let result = cancel_campaign(env, admin, 1);
+            assert_eq!(
+                result,
+                Err(Error::CampaignCancelled),
+                "cancel from Cancelled (terminal) must be rejected"
+            );
+        });
+    }
+
+    #[test]
+    fn test_cancel_unauthorized_fails() {
+        let test_env = TestEnv::new();
+        let env = &test_env.env;
+        let admin = &test_env.admin;
+        let attacker = Address::generate(env);
+
+        env.as_contract(&env.current_contract_address(), || {
+            let campaign = make_campaign(env, admin, CampaignStatus::Active);
+            storage::set_campaign(env, 1, &campaign);
+
+            let result = cancel_campaign(env, &attacker, 1);
             assert_eq!(result, Err(Error::Unauthorized));
         });
     }

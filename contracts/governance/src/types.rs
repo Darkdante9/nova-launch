@@ -190,11 +190,6 @@ pub enum FinalizationError {
     AlreadyFinalized = 3,
     AlreadyExecuted = 4,
     ProposalNotPassed = 5,
-    /// No token-factory address has been configured via `set_token_factory`.
-    TokenFactoryNotConfigured = 6,
-    /// The proposal already has a disbursement attached.
-    DisbursementAlreadyAttached = 7,
-    /// Cross-contract settlement failed (prepare succeeded but commit did
-    /// not); the reservation was released via `abort_settlement`.
-    DisbursementFailed = 8,
+    /// Checked arithmetic overflow during vote-total or threshold computation
+    ArithmeticOverflow = 6,
 }
