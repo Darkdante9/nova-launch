@@ -21,6 +21,8 @@ mod burn;
 mod settlement;
 mod clawback;
 mod campaign;
+mod amm;
+mod invariants;
 #[cfg(feature = "legacy-tests")]
 mod burn_auction;
 mod differential_engine;
@@ -76,6 +78,8 @@ mod validation;
 // mod campaign_state_test;
 #[cfg(test)]
 mod campaign_state_machine_proptest;
+#[cfg(test)]
+mod campaign_pause_resume_integration_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -130,6 +134,10 @@ const _ISOLATED_DISABLED_stream_claim_differential_test: () = ();
 mod cross_contract_integration_test;
 #[cfg(test)]
 mod compliance_reporting_test;
+#[cfg(test)]
+mod amm_test;
+#[cfg(test)]
+mod invariant_tests;
 
 // #[cfg(test)]
 // mod cross_contract_auth_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
@@ -4105,6 +4113,22 @@ impl TokenFactory {
         campaign::retry_finalize_campaign(&env, &caller, campaign_id)
     }
 
+    /// Pause an active campaign (Active → Paused).
+    ///
+    /// Only the campaign owner or contract admin may pause. Replay-protected:
+    /// returns `Error::CampaignAlreadyPaused` if already paused.
+    pub fn pause_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
+        campaign::pause_campaign(&env, &caller, campaign_id)
+    }
+
+    /// Resume a paused campaign (Paused → Active).
+    ///
+    /// Only the campaign owner or contract admin may resume. Replay-protected:
+    /// returns `Error::CampaignNotPaused` if already active.
+    pub fn resume_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
+        campaign::resume_campaign(&env, &caller, campaign_id)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Governance Proposal Functions
     // ═══════════════════════════════════════════════════════════════════════
@@ -4673,6 +4697,85 @@ impl TokenFactory {
         events::emit_multisig_executed(env, proposal.id, executor);
 
         Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // AMM Functions (#1674)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Add liquidity to a constant-product pool and receive LP tokens.
+    ///
+    /// Creates the pool on first call. Subsequent calls must supply tokens in
+    /// the same order used at creation.
+    ///
+    /// # Arguments
+    /// * `caller`   - Liquidity provider address (must authorize)
+    /// * `token_a`  - First token in the pair
+    /// * `token_b`  - Second token in the pair
+    /// * `amount_a` - Amount of `token_a` to deposit (> 0)
+    /// * `amount_b` - Amount of `token_b` to deposit (> 0)
+    ///
+    /// # Returns
+    /// LP tokens minted to the caller.
+    pub fn add_liquidity(
+        env: Env,
+        caller: Address,
+        token_a: Address,
+        token_b: Address,
+        amount_a: i128,
+        amount_b: i128,
+    ) -> Result<i128, Error> {
+        amm::add_liquidity(&env, &caller, &token_a, &token_b, amount_a, amount_b)
+    }
+
+    /// Remove liquidity by burning LP tokens and receiving both underlying tokens back.
+    ///
+    /// # Arguments
+    /// * `caller`    - LP token holder (must authorize)
+    /// * `token_a`   - First token of the pair (creation order)
+    /// * `token_b`   - Second token of the pair (creation order)
+    /// * `lp_amount` - LP tokens to burn (> 0)
+    ///
+    /// # Returns
+    /// `(amount_a, amount_b)` returned to the caller.
+    pub fn remove_liquidity(
+        env: Env,
+        caller: Address,
+        token_a: Address,
+        token_b: Address,
+        lp_amount: i128,
+    ) -> Result<(i128, i128), Error> {
+        amm::remove_liquidity(&env, &caller, &token_a, &token_b, lp_amount)
+    }
+
+    /// Swap tokens using the constant-product formula `x*y=k`.
+    ///
+    /// # Arguments
+    /// * `caller`         - Swapper address (must authorize)
+    /// * `token_in`       - Token being sold
+    /// * `token_out`      - Token being bought
+    /// * `amount_in`      - Amount to sell (> 0)
+    /// * `min_amount_out` - Minimum acceptable output (slippage guard)
+    ///
+    /// # Returns
+    /// Actual amount of `token_out` received.
+    pub fn swap(
+        env: Env,
+        caller: Address,
+        token_in: Address,
+        token_out: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+    ) -> Result<i128, Error> {
+        amm::swap(&env, &caller, &token_in, &token_out, amount_in, min_amount_out)
+    }
+
+    /// Return the current spot price of `token_a` in terms of `token_b`,
+    /// scaled by `PRICE_PRECISION` (1e9).
+    ///
+    /// Divide the result by `amm::PRICE_PRECISION` for the human-readable ratio.
+    pub fn get_price(env: Env, token_a: Address, token_b: Address) -> Result<i128, Error> {
+        amm::get_price(&env, &token_a, &token_b)
     }
 }
 

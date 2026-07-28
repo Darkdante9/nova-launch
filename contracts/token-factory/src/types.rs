@@ -780,6 +780,20 @@ pub struct BurnAuction {
     pub settled_at: Option<u64>,
 }
 
+/// Constant-product AMM pool state.
+///
+/// Stores reserves and LP token supply for a (token_a, token_b) pair.
+/// The pair ordering is determined by the first `add_liquidity` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmmPool {
+    pub token_a: Address,
+    pub token_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub total_lp: i128,
+}
+
 /// Storage keys for contract data
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -919,31 +933,8 @@ pub enum DataKey {
     BurnScheduleCount,
     // Metadata update history count: token_index
     MetadataHistoryCount(u32),
-    // Cross-contract atomic settlement (#1624)
-    /// Auto-incrementing counter for reservation ids.
-    NextReservationId,
-    /// A prepare/commit/abort reservation, keyed by its id.
-    Reservation(u64),
-    /// Sum of amounts currently reserved (prepared but not yet committed or
-    /// aborted) against a token's max-supply headroom: token_index -> total.
-    ReservedTotal(u32),
-    /// Admin-configurable timeout (in ledgers) after which a reservation
-    /// stuck in `Prepared` may be force-released via `cleanup_stuck_reservation`.
-    ReservationTimeoutLedgers,
-    // Gas-bounded batch scheduler (#1625)
-    /// Configurable per-ledger gas budget (CPU instructions) shared by all tenants.
-    BatchGasBudget,
-    /// Ordered set of tenant addresses with a pending batch continuation,
-    /// used for round-robin fair-share scheduling.
-    FairShareQueue,
-    /// Gas already consumed by a tenant on a given ledger: (tenant, ledger_seq).
-    TenantLedgerGasUsed(Address, u32),
-    /// Total gas consumed by all tenants on a given ledger.
-    LedgerGasUsed(u32),
-    /// Pending `batch_reveal` continuation for a tenant.
-    RevealContinuation(Address),
-    /// Pending `batch_settle` continuation for a tenant.
-    SettleContinuation(Address),
+    // AMM liquidity pools: keyed by (token_a, token_b) in creation order
+    AmmPool(Address, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1260,7 +1251,11 @@ impl Error {
     pub const DistributionZeroSupply: Self = Self(105);
     // Multisig errors
     pub const DuplicateSigners: Self = Self(106);
-    pub const FreezeCooldownActive: Self = Self(107);
+    // AMM errors (#1674)
+    pub const PoolNotFound: Self = Self(107);
+    pub const InsufficientLiquidity: Self = Self(108);
+    pub const SlippageExceeded: Self = Self(109);
+    pub const InvalidTokenPair: Self = Self(110);
 }
 
 impl From<Error> for soroban_sdk::Error {
