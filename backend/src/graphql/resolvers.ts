@@ -7,7 +7,9 @@
  * Pagination: `limit` is capped at 100; `offset` defaults to 0.
  */
 
+import { GraphQLError } from "graphql";
 import { prisma } from "../lib/prisma";
+import { logger } from "../lib/logger";
 import { eventBus, EventBus } from "../services/eventBus";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +23,15 @@ function paginate(args: { limit?: number | null; offset?: number | null }) {
     take: Math.min(args.limit ?? 20, MAX_LIMIT),
     skip: args.offset ?? 0,
   };
+}
+
+/** Log the real error server-side and throw a sanitized client-facing error. */
+function handleDbError(resolver: string, err: unknown): never {
+  logger.error(`GraphQL resolver error in ${resolver}`, {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
+  throw new GraphQLError("Internal server error");
 }
 
 /** Recursively convert BigInt values to strings for JSON safety. */
@@ -225,10 +236,14 @@ export const resolvers = {
 
     /** Fetch a single token by its on-chain address. */
     async token(_: unknown, args: { address: string }) {
-      const row = await prisma.token.findUnique({
-        where: { address: args.address },
-      });
-      return row ? bigintToString(row) : null;
+      try {
+        const row = await prisma.token.findUnique({
+          where: { address: args.address },
+        });
+        return row ? bigintToString(row) : null;
+      } catch (err) {
+        handleDbError("token", err);
+      }
     },
 
     /** List tokens, optionally filtered by creator. */
@@ -236,22 +251,30 @@ export const resolvers = {
       _: unknown,
       args: { creator?: string; limit?: number; offset?: number }
     ) {
-      const rows = await prisma.token.findMany({
-        where: args.creator ? { creator: args.creator } : undefined,
-        orderBy: { createdAt: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+      try {
+        const rows = await prisma.token.findMany({
+          where: args.creator ? { creator: args.creator } : undefined,
+          orderBy: { createdAt: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("tokens", err);
+      }
     },
 
     // ── Stream ──────────────────────────────────────────────────────────────
 
     /** Fetch a single stream by its on-chain streamId. */
     async stream(_: unknown, args: { streamId: number }) {
-      const row = await prisma.stream.findUnique({
-        where: { streamId: args.streamId },
-      });
-      return row ? bigintToString(row) : null;
+      try {
+        const row = await prisma.stream.findUnique({
+          where: { streamId: args.streamId },
+        });
+        return row ? bigintToString(row) : null;
+      } catch (err) {
+        handleDbError("stream", err);
+      }
     },
 
     /** List streams with optional creator / recipient / status filters. */
@@ -265,27 +288,35 @@ export const resolvers = {
         offset?: number;
       }
     ) {
-      const where: Record<string, unknown> = {};
-      if (args.creator) where.creator = args.creator;
-      if (args.recipient) where.recipient = args.recipient;
-      if (args.status) where.status = args.status;
+      try {
+        const where: Record<string, unknown> = {};
+        if (args.creator) where.creator = args.creator;
+        if (args.recipient) where.recipient = args.recipient;
+        if (args.status) where.status = args.status;
 
-      const rows = await prisma.stream.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+        const rows = await prisma.stream.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("streams", err);
+      }
     },
 
     // ── Governance ──────────────────────────────────────────────────────────
 
     /** Fetch a single proposal by its on-chain proposalId. */
     async proposal(_: unknown, args: { proposalId: number }) {
-      const row = await prisma.proposal.findUnique({
-        where: { proposalId: args.proposalId },
-      });
-      return row ? bigintToString(row) : null;
+      try {
+        const row = await prisma.proposal.findUnique({
+          where: { proposalId: args.proposalId },
+        });
+        return row ? bigintToString(row) : null;
+      } catch (err) {
+        handleDbError("proposal", err);
+      }
     },
 
     /** List proposals with optional filters. */
@@ -300,18 +331,22 @@ export const resolvers = {
         offset?: number;
       }
     ) {
-      const where: Record<string, unknown> = {};
-      if (args.tokenId) where.tokenId = args.tokenId;
-      if (args.proposer) where.proposer = args.proposer;
-      if (args.status) where.status = args.status;
-      if (args.proposalType) where.proposalType = args.proposalType;
+      try {
+        const where: Record<string, unknown> = {};
+        if (args.tokenId) where.tokenId = args.tokenId;
+        if (args.proposer) where.proposer = args.proposer;
+        if (args.status) where.status = args.status;
+        if (args.proposalType) where.proposalType = args.proposalType;
 
-      const rows = await prisma.proposal.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+        const rows = await prisma.proposal.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("proposals", err);
+      }
     },
 
     /**
@@ -323,24 +358,32 @@ export const resolvers = {
      * position within each type. Optionally narrowed to one `proposalType`.
      */
     async governanceQueue(_: unknown, args: { proposalType?: string }) {
-      const where: Record<string, unknown> = { status: "QUEUED" };
-      if (args.proposalType) where.proposalType = args.proposalType;
+      try {
+        const where: Record<string, unknown> = { status: "QUEUED" };
+        if (args.proposalType) where.proposalType = args.proposalType;
 
-      const rows = await prisma.proposal.findMany({
-        where,
-        orderBy: { createdAt: "asc" },
-      });
-      return bigintToString(rows);
+        const rows = await prisma.proposal.findMany({
+          where,
+          orderBy: { createdAt: "asc" },
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("governanceQueue", err);
+      }
     },
 
     // ── Campaign ─────────────────────────────────────────────────────────────
 
     /** Fetch a single campaign by its on-chain campaignId. */
     async campaign(_: unknown, args: { campaignId: number }) {
-      const row = await prisma.campaign.findUnique({
-        where: { campaignId: args.campaignId },
-      });
-      return row ? bigintToString(row) : null;
+      try {
+        const row = await prisma.campaign.findUnique({
+          where: { campaignId: args.campaignId },
+        });
+        return row ? bigintToString(row) : null;
+      } catch (err) {
+        handleDbError("campaign", err);
+      }
     },
 
     /** List campaigns with optional filters. */
@@ -355,18 +398,22 @@ export const resolvers = {
         offset?: number;
       }
     ) {
-      const where: Record<string, unknown> = {};
-      if (args.tokenId) where.tokenId = args.tokenId;
-      if (args.creator) where.creator = args.creator;
-      if (args.status) where.status = args.status;
-      if (args.type) where.type = args.type;
+      try {
+        const where: Record<string, unknown> = {};
+        if (args.tokenId) where.tokenId = args.tokenId;
+        if (args.creator) where.creator = args.creator;
+        if (args.status) where.status = args.status;
+        if (args.type) where.type = args.type;
 
-      const rows = await prisma.campaign.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+        const rows = await prisma.campaign.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("campaigns", err);
+      }
     },
   },
 
@@ -478,12 +525,16 @@ export const resolvers = {
       parent: { id: string },
       args: { limit?: number; offset?: number }
     ) {
-      const rows = await prisma.burnRecord.findMany({
-        where: { tokenId: parent.id },
-        orderBy: { timestamp: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+      try {
+        const rows = await prisma.burnRecord.findMany({
+          where: { tokenId: parent.id },
+          orderBy: { timestamp: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("burnRecords", err);
+      }
     },
   },
 
@@ -493,12 +544,16 @@ export const resolvers = {
       parent: { id: string },
       args: { limit?: number; offset?: number }
     ) {
-      const rows = await prisma.vote.findMany({
-        where: { proposalId: parent.id },
-        orderBy: { timestamp: "desc" },
-        ...paginate(args),
-      });
-      return bigintToString(rows);
+      try {
+        const rows = await prisma.vote.findMany({
+          where: { proposalId: parent.id },
+          orderBy: { timestamp: "desc" },
+          ...paginate(args),
+        });
+        return bigintToString(rows);
+      } catch (err) {
+        handleDbError("votes", err);
+      }
     },
 
     /**
@@ -512,15 +567,19 @@ export const resolvers = {
       proposalType: string;
       createdAt: Date | string;
     }) {
-      if (parent.status !== "QUEUED") return null;
-      const ahead = await prisma.proposal.count({
-        where: {
-          status: "QUEUED",
-          proposalType: parent.proposalType as any,
-          createdAt: { lt: new Date(parent.createdAt) },
-        },
-      });
-      return ahead;
+      try {
+        if (parent.status !== "QUEUED") return null;
+        const ahead = await prisma.proposal.count({
+          where: {
+            status: "QUEUED",
+            proposalType: parent.proposalType as any,
+            createdAt: { lt: new Date(parent.createdAt) },
+          },
+        });
+        return ahead;
+      } catch (err) {
+        handleDbError("queuePosition", err);
+      }
     },
   },
 };
