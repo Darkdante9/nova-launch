@@ -99,7 +99,8 @@ pub fn initiate_distribution(
     claim_window_ledgers: u32,
 ) -> Result<u32, Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
     if total_amount <= 0 || claim_window_ledgers == 0 {
@@ -139,10 +140,12 @@ pub fn initiate_distribution(
     };
     set_distribution(env, &rec);
 
-    // Increment count
+    // Increment count with checked arithmetic to match the pattern used
+    // throughout this function and prevent silent wraparound near u32::MAX.
+    let next_count = id.checked_add(1).ok_or(Error::ArithmeticError)?;
     env.storage()
         .persistent()
-        .set(&DataKey::DistributionCount, &(id + 1));
+        .set(&DataKey::DistributionCount, &next_count);
     storage::bump_persistent(env, &DataKey::DistributionCount);
 
     events::emit_distribution_initiated(
@@ -244,7 +247,8 @@ pub fn reclaim_unclaimed(
     distribution_id: u32,
 ) -> Result<i128, Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
 
@@ -441,5 +445,71 @@ mod snapshot_dividend_test {
 
         // Should fail because token has zero supply
         assert_eq!(result_dist, Err(Error::TokenNotFound));
+    }
+}
+
+// ── Tests — Issue #1684: checked distribution counter ────────────────────────
+
+#[cfg(test)]
+mod distribution_counter_overflow_test {
+    use super::*;
+    use crate::storage;
+    use crate::types::{DataKey, Error};
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    /// Force the DistributionCount to `u32::MAX` and assert that
+    /// `initiate_distribution` returns `Error::ArithmeticError` rather than
+    /// silently wrapping the counter back to 0.
+    #[test]
+    fn test_distribution_counter_overflow_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Register the contract without full initialization so we can seed
+        // storage manually.
+        env.register_contract(None, crate::TokenFactory);
+        let admin = Address::generate(&env);
+        let asset = Address::generate(&env);
+
+        storage::set_admin(&env, &admin);
+
+        // Seed a token at index 0 so the function doesn't bail with
+        // TokenNotFound before it reaches the counter increment.
+        let token_info = crate::types::TokenInfo {
+            address: Address::generate(&env),
+            creator: admin.clone(),
+            name: soroban_sdk::String::from_str(&env, "T"),
+            symbol: soroban_sdk::String::from_str(&env, "T"),
+            decimals: 7,
+            total_supply: 1_000_000,
+            initial_supply: 1_000_000,
+            max_supply: None,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: 0,
+            total_burned: 0,
+            burn_count: 0,
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        };
+        storage::set_token_info(&env, 0, &token_info);
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenCount, &1u32);
+
+        // Force the distribution counter to u32::MAX so the next increment
+        // would overflow.
+        env.storage()
+            .persistent()
+            .set(&DataKey::DistributionCount, &u32::MAX);
+
+        let result = initiate_distribution(&env, &admin, 0, &asset, 1_000_000, 100);
+
+        assert_eq!(
+            result,
+            Err(Error::ArithmeticError),
+            "distribution counter overflow must return ArithmeticError, not wrap silently"
+        );
     }
 }

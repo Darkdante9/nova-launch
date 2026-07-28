@@ -56,7 +56,7 @@ pub fn pause_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<(
     let mut campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
 
     // Authorization check: must be owner or admin
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *caller != campaign.owner && *caller != admin {
         return Err(Error::Unauthorized);
     }
@@ -127,7 +127,7 @@ pub fn resume_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Result<
     let mut campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
 
     // Authorization check: must be owner or admin
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *caller != campaign.owner && *caller != admin {
         return Err(Error::Unauthorized);
     }
@@ -256,7 +256,7 @@ pub fn finalize_campaign(env: &Env, caller: &Address, campaign_id: u64) -> Resul
 
     let mut campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
 
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *caller != campaign.owner && *caller != admin {
         return Err(Error::Unauthorized);
     }
@@ -290,7 +290,7 @@ pub fn retry_finalize_campaign(env: &Env, caller: &Address, campaign_id: u64) ->
 
     let campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
 
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *caller != campaign.owner && *caller != admin {
         return Err(Error::Unauthorized);
     }

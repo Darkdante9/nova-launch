@@ -83,7 +83,7 @@ pub fn migrate(env: &Env, admin: Address) -> Result<(), Error> {
     admin.require_auth();
 
     // Verify caller is admin
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -126,7 +126,7 @@ pub fn migrate_dry_run(env: &Env, admin: Address) -> Result<DryRunDiff, Error> {
     admin.require_auth();
 
     // Verify caller is admin
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }

@@ -296,7 +296,7 @@ impl TokenFactory {
     /// - `Unauthorized` – caller is not the contract admin
     pub fn set_milestone_verifier(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -447,7 +447,7 @@ impl TokenFactory {
     /// Set the token used for fee payments (admin only)
     pub fn set_fee_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -458,7 +458,7 @@ impl TokenFactory {
     /// Set the governance contract address (admin only)
     pub fn set_governance(env: Env, admin: Address, governance: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -507,7 +507,7 @@ impl TokenFactory {
     /// assert!(user_balance >= base_fee);
     /// ```
     pub fn get_base_fee(env: Env) -> i128 {
-        storage::get_base_fee(&env)
+        storage::get_base_fee(&env).unwrap_or(0)
     }
 
     /// Get the current metadata fee for token deployment
@@ -527,7 +527,7 @@ impl TokenFactory {
     /// // Total fee when including metadata
     /// ```
     pub fn get_metadata_fee(env: Env) -> i128 {
-        storage::get_metadata_fee(&env)
+        storage::get_metadata_fee(&env).unwrap_or(0)
     }
 
     /// Transfer admin rights to a new address
@@ -554,7 +554,7 @@ impl TokenFactory {
 
         // Combined verification (Phase 1 optimization)
         // Early return if not authorized
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if current_admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -603,7 +603,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         current_admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if current_admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -645,7 +645,7 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let old_admin = storage::get_admin(&env);
+        let old_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
 
         // Update admin and clear pending in single operation
         storage::set_admin(&env, &new_admin);
@@ -668,7 +668,7 @@ impl TokenFactory {
     pub fn cancel_admin(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -690,7 +690,7 @@ impl TokenFactory {
     pub fn register_trusted_caller(env: Env, admin: Address, caller: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -708,7 +708,7 @@ impl TokenFactory {
     pub fn revoke_trusted_caller(env: Env, admin: Address, caller: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -764,7 +764,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Combined verification (Phase 1 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -802,7 +802,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Combined verification (Phase 1 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -941,7 +941,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Single admin verification (Phase 2 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -2115,7 +2115,7 @@ impl TokenFactory {
     /// Emits `tok_paus` with token_index and admin address
     pub fn pause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         let token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
@@ -2150,7 +2150,7 @@ impl TokenFactory {
     /// Emits `tok_unpas` with token_index and admin address
     pub fn unpause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         let token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
@@ -2976,7 +2976,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -3409,7 +3409,7 @@ impl TokenFactory {
                 return Err(Error::TokenNotFound);
             }
         };
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if actor != vault.creator && actor != admin {
             events::emit_operation_failed(&env, vault_id, Error::Unauthorized, vault.total_amount, "not_creator_or_admin");
             return Err(Error::Unauthorized);
@@ -3771,7 +3771,7 @@ impl TokenFactory {
         let mut stream = storage::get_stream(&env, stream_id.into()).ok_or(Error::TokenNotFound)?;
 
         // Verify authorization: only creator or admin can update
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if updater != stream.creator && updater != admin {
             return Err(Error::Unauthorized);
         }
@@ -4015,7 +4015,7 @@ impl TokenFactory {
         creator.require_auth();
 
         // Allow only factory admin or token creator.
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         let token = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         if creator != admin && creator != token.creator {
             return Err(Error::Unauthorized);
@@ -4239,6 +4239,22 @@ impl TokenFactory {
         compliance_reporting::generate_report(&env, &admin)
     }
 
+    /// Generate a compliance report scanning **all** tokens (full-history opt-in).
+    ///
+    /// Unlike `generate_compliance_report`, this scans every token the factory
+    /// has ever created.  Its CPU cost grows linearly with token count; use it
+    /// only on small factories or for one-off administrative audits.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized`    – Caller is not the admin.
+    /// * `Error::ArithmeticError` – Report ID counter overflowed.
+    pub fn generate_compliance_report_full(
+        env: Env,
+        admin: Address,
+    ) -> Result<compliance_reporting::ComplianceReport, Error> {
+        compliance_reporting::generate_report_full(&env, &admin)
+    }
+
     /// Retrieve a previously generated compliance report by ID.
     ///
     /// # Arguments
@@ -4343,7 +4359,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -4573,7 +4589,7 @@ impl TokenFactory {
         }
 
         // Only admin or the original proposer may cancel
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if canceller != admin && canceller != proposal.proposer {
             return Err(Error::Unauthorized);
         }
@@ -4619,7 +4635,7 @@ impl TokenFactory {
                 )
                 .to_address(env);
 
-                let old_admin = storage::get_admin(env);
+                let old_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
                 storage::set_admin(env, &new_admin);
                 storage::clear_pending_admin(env);
                 events::emit_admin_transfer(env, &old_admin, &new_admin);

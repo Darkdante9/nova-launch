@@ -108,7 +108,7 @@ pub fn add_pin(
     caller.require_auth();
 
     let token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
 
     if *caller != token_info.creator && *caller != admin {
         return Err(Error::Unauthorized);
@@ -182,7 +182,7 @@ pub fn deactivate_pin(
     caller.require_auth();
 
     let token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
 
     if *caller != token_info.creator && *caller != admin {
         return Err(Error::Unauthorized);
@@ -256,7 +256,7 @@ pub fn get_pin_rate_limit(env: &Env) -> u32 {
 /// Set the rate limit for pin requests (admin only).
 pub fn set_pin_rate_limit(env: &Env, admin: &Address, limit: u32) -> Result<(), Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

@@ -51,7 +51,7 @@ pub fn clawback(
 
     // 2. Admin authentication — never accept a raw Address without require_auth()
     admin.require_auth();
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }
