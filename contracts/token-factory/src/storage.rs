@@ -219,16 +219,16 @@ pub fn get_factory_state(env: &Env) -> FactoryState {
         admin: get_admin(env).unwrap_or_else(|| {
             // Factory not yet initialised; return a zeroed sentinel.
             // Callers that need a real admin should check `has_admin` first.
-            soroban_sdk::Address::from_contract_id(
-                env,
-                &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            soroban_sdk::address_payload::AddressPayload::ContractIdHash(
+                soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
             )
+            .to_address(env)
         }),
         treasury: get_treasury(env).unwrap_or_else(|| {
-            soroban_sdk::Address::from_contract_id(
-                env,
-                &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            soroban_sdk::address_payload::AddressPayload::ContractIdHash(
+                soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
             )
+            .to_address(env)
         }),
         base_fee: get_base_fee(env).unwrap_or(0),
         metadata_fee: get_metadata_fee(env).unwrap_or(0),
@@ -1513,6 +1513,41 @@ pub fn set_address_frozen(env: &Env, token_address: &Address, address: &Address,
     }
 }
 
+/// Record the ledger timestamp at which `address` was frozen on `token_address`.
+pub fn set_freeze_timestamp(env: &Env, token_address: &Address, address: &Address, timestamp: u64) {
+    env.storage().persistent().set(
+        &crate::types::DataKey::FreezeTimestamp(token_address.clone(), address.clone()),
+        &timestamp,
+    );
+}
+
+/// Get the ledger timestamp at which `address` was frozen on `token_address`, if any.
+pub fn get_freeze_timestamp(env: &Env, token_address: &Address, address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeTimestamp(
+            token_address.clone(),
+            address.clone(),
+        ))
+        .unwrap_or(0)
+}
+
+/// Set the unfreeze cooldown grace period (seconds) for a token.
+pub fn set_freeze_cooldown(env: &Env, token_address: &Address, cooldown_seconds: u64) {
+    env.storage().persistent().set(
+        &crate::types::DataKey::FreezeCooldown(token_address.clone()),
+        &cooldown_seconds,
+    );
+}
+
+/// Get the unfreeze cooldown grace period (seconds) for a token. Defaults to 0 (no cooldown).
+pub fn get_freeze_cooldown(env: &Env, token_address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeCooldown(token_address.clone()))
+        .unwrap_or(0)
+}
+
 // ── Governance storage functions ───────────────────────────
 
 /// Get governance configuration
@@ -1749,67 +1784,6 @@ pub fn decrement_active_campaign_count(env: &Env) -> Result<u32, Error> {
     Ok(new_count)
 }
 // ============================================================
-// Fractionalization Storage Functions
-// ============================================================
-
-/// Get fractional vault by ID
-pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
-    env.storage().persistent().get(&crate::types::DataKey::FractionalVault(vault_id))
-}
-
-/// Set fractional vault
-pub fn set_fractional_vault(env: &Env, vault_id: u64, vault: &crate::types::FractionalVault) -> Result<(), Error> {
-    env.storage().persistent().set(&crate::types::DataKey::FractionalVault(vault_id), vault);
-    Ok(())
-}
-
-/// Get fractional vault count
-pub fn get_fractional_vault_count(env: &Env) -> u64 {
-    env.storage().instance().get(&crate::types::DataKey::FractionalVaultCount).unwrap_or(0)
-}
-
-/// Increment fractional vault count
-pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
-    let current = get_fractional_vault_count(env);
-    let new_count = current.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().instance().set(&crate::types::DataKey::FractionalVaultCount, &new_count);
-    Ok(new_count)
-}
-
-/// Get owner's fractional vault count
-pub fn get_owner_fractional_vault_count(env: &Env, owner: &Address) -> u32 {
-    env.storage().persistent().get(&crate::types::DataKey::OwnerFractionalVaultCount(owner.clone())).unwrap_or(0)
-}
-
-/// Increment owner's fractional vault count
-pub fn increment_owner_fractional_vault_count(env: &Env, owner: &Address) -> Result<u32, Error> {
-    let current = get_owner_fractional_vault_count(env, owner);
-    let new_count = current.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(&crate::types::DataKey::OwnerFractionalVaultCount(owner.clone()), &new_count);
-    Ok(new_count)
-}
-
-/// Set fractional vault by owner
-pub fn set_fractional_vault_by_owner(env: &Env, owner: &Address, index: u32, vault_id: u64) {
-    env.storage().persistent().set(&crate::types::DataKey::FractionalVaultByOwner(owner.clone(), index), &vault_id);
-}
-
-/// Get vault ID for an asset
-pub fn get_asset_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>) -> Option<u64> {
-    env.storage().persistent().get(&crate::types::DataKey::AssetToVault(asset_id.clone()))
-}
-
-/// Set asset to vault mapping
-pub fn set_asset_to_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>, vault_id: u64) {
-    env.storage().persistent().set(&crate::types::DataKey::AssetToVault(asset_id.clone()), &vault_id);
-}
-
-/// Remove asset to vault mapping
-pub fn remove_asset_to_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>) {
-    env.storage().persistent().remove(&crate::types::DataKey::AssetToVault(asset_id.clone()));
-}
-
-// ============================================================
 // Role-Based Access Control
 // ============================================================
 
@@ -1932,33 +1906,6 @@ pub fn set_multisig_approval(env: &Env, proposal_id: u64, approver: &Address) {
 // Burn Schedule Storage
 // ============================================================
 
-pub fn next_burn_schedule_id(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get::<_, u64>(&crate::types::DataKey::BurnScheduleCount)
-        .unwrap_or(0)
-}
-
-pub fn increment_burn_schedule_id(env: &Env) -> u64 {
-    let id = next_burn_schedule_id(env);
-    env.storage()
-        .instance()
-        .set(&crate::types::DataKey::BurnScheduleCount, &(id + 1));
-    id
-}
-
-pub fn get_burn_schedule(env: &Env, id: u64) -> Option<crate::types::BurnSchedule> {
-    env.storage()
-        .instance()
-        .get(&crate::types::DataKey::BurnSchedule(id))
-}
-
-pub fn set_burn_schedule(env: &Env, schedule: &crate::types::BurnSchedule) {
-    env.storage()
-        .instance()
-        .set(&crate::types::DataKey::BurnSchedule(schedule.id), schedule);
-}
-
 pub fn get_burn_schedule_count_by_token(env: &Env, token_index: u32) -> u32 {
     env.storage()
         .instance()
@@ -2074,72 +2021,193 @@ pub fn remove_pending_vault_owner_change(env: &Env, vault_id: u64) {
 }
 
 // ============================================================
-// Recurring Stream Storage
+// Batch Scheduler Storage (#1625)
 // ============================================================
 
-/// Get recurring stream by ID
-pub fn get_recurring_stream(env: &Env, stream_id: u64) -> Option<crate::types::RecurringStream> {
-    env.storage()
-        .persistent()
-        .get(&crate::types::DataKey::RecurringStream(stream_id))
-}
-
-/// Set recurring stream
-pub fn set_recurring_stream(env: &Env, stream_id: u64, stream: &crate::types::RecurringStream) {
-    env.storage()
-        .persistent()
-        .set(&crate::types::DataKey::RecurringStream(stream_id), stream);
-}
-
-/// Get total recurring stream count
-pub fn get_recurring_stream_count(env: &Env) -> u64 {
+/// Current per-ledger gas budget, defaulting to `DEFAULT_LEDGER_GAS_BUDGET`
+/// (see `batch_scheduler`) until an admin overrides it.
+pub fn get_ledger_gas_budget(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&crate::types::DataKey::RecurringStreamCount)
+        .get(&DataKey::LedgerGasBudget)
+        .unwrap_or(crate::batch_scheduler::DEFAULT_LEDGER_GAS_BUDGET)
+}
+
+/// Set the per-ledger gas budget.
+pub fn set_ledger_gas_budget(env: &Env, budget: u64) {
+    env.storage().instance().set(&DataKey::LedgerGasBudget, &budget);
+}
+
+/// Tenants currently holding a pending batch-scheduler continuation, in
+/// fair-share rotation order.
+pub fn get_fair_share_queue(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::FairShareQueue)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn set_fair_share_queue(env: &Env, queue: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::FairShareQueue, queue);
+}
+
+/// Add `tenant` to the fair-share queue if not already present.
+pub fn enqueue_tenant(env: &Env, tenant: &Address) {
+    let mut queue = get_fair_share_queue(env);
+    for t in queue.iter() {
+        if t == *tenant {
+            return;
+        }
+    }
+    queue.push_back(tenant.clone());
+    set_fair_share_queue(env, &queue);
+}
+
+/// Remove `tenant` from the fair-share queue.
+pub fn dequeue_tenant(env: &Env, tenant: &Address) {
+    let queue = get_fair_share_queue(env);
+    let mut updated = Vec::new(env);
+    for t in queue.iter() {
+        if t != *tenant {
+            updated.push_back(t);
+        }
+    }
+    set_fair_share_queue(env, &updated);
+}
+
+/// Move `tenant` to the back of the fair-share queue (round-robin fairness
+/// across resume calls within the same ledger).
+pub fn rotate_tenant_to_back(env: &Env, tenant: &Address) {
+    dequeue_tenant(env, tenant);
+    enqueue_tenant(env, tenant);
+}
+
+/// Gas used by `tenant` on `ledger_seq` so far.
+pub fn get_tenant_ledger_gas_used(env: &Env, tenant: &Address, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq))
         .unwrap_or(0)
 }
 
-/// Get next recurring stream ID and increment counter
-pub fn next_recurring_stream_id(env: &Env) -> u64 {
-    let id = env
-        .storage()
-        .instance()
-        .get(&crate::types::DataKey::NextRecurringStreamId)
-        .unwrap_or(0_u64);
+/// Total gas used by all tenants on `ledger_seq` so far.
+pub fn get_ledger_gas_used(env: &Env, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::LedgerGasUsed(ledger_seq))
+        .unwrap_or(0)
+}
+
+/// Record that `tenant` consumed `amount` gas on `ledger_seq`, updating both
+/// the per-tenant and ledger-wide running totals.
+pub fn record_gas_used(env: &Env, tenant: &Address, ledger_seq: u32, amount: u64) {
+    let tenant_used = get_tenant_ledger_gas_used(env, tenant, ledger_seq) + amount;
+    env.storage().temporary().set(
+        &DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq),
+        &tenant_used,
+    );
+
+    let ledger_used = get_ledger_gas_used(env, ledger_seq) + amount;
+    env.storage()
+        .temporary()
+        .set(&DataKey::LedgerGasUsed(ledger_seq), &ledger_used);
+}
+
+/// Get the pending `schedule_batch_reveal` continuation for `creator`, if any.
+pub fn get_reveal_continuation(env: &Env, creator: &Address) -> Option<RevealBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RevealContinuation(creator.clone()))
+}
+
+/// Set the pending `schedule_batch_reveal` continuation for `creator`.
+pub fn set_reveal_continuation(env: &Env, creator: &Address, continuation: &RevealBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RevealContinuation(creator.clone()), continuation);
+}
+
+/// Clear the pending `schedule_batch_reveal` continuation for `creator`.
+pub fn clear_reveal_continuation(env: &Env, creator: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::RevealContinuation(creator.clone()));
+}
+
+/// Get the pending `schedule_batch_settle` continuation for `creator`, if any.
+pub fn get_settle_continuation(env: &Env, creator: &Address) -> Option<SettleBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SettleContinuation(creator.clone()))
+}
+
+/// Set the pending `schedule_batch_settle` continuation for `creator`.
+pub fn set_settle_continuation(env: &Env, creator: &Address, continuation: &SettleBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SettleContinuation(creator.clone()), continuation);
+}
+
+/// Clear the pending `schedule_batch_settle` continuation for `creator`.
+pub fn clear_settle_continuation(env: &Env, creator: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SettleContinuation(creator.clone()));
+}
+
+// ============================================================
+// Settlement Storage (#1624)
+// ============================================================
+
+/// Total amount of `token_index` currently held by pending (Prepared)
+/// settlement reservations.
+pub fn get_reserved_total(env: &Env, token_index: u32) -> i128 {
     env.storage()
         .instance()
-        .set(&crate::types::DataKey::NextRecurringStreamId, &(id + 1));
+        .get(&DataKey::ReservedTotal(token_index))
+        .unwrap_or(0)
+}
+
+/// Set the total amount of `token_index` currently reserved.
+pub fn set_reserved_total(env: &Env, token_index: u32, total: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservedTotal(token_index), &total);
+}
+
+/// Allocate the next settlement reservation id.
+pub fn next_reservation_id(env: &Env) -> u64 {
+    let id: u64 = env.storage().instance().get(&DataKey::ReservationCount).unwrap_or(0);
+    env.storage().instance().set(&DataKey::ReservationCount, &(id + 1));
     id
 }
 
-/// Get number of recurring streams created by a creator
-pub fn get_creator_recurring_stream_count(env: &Env, creator: &Address) -> u32 {
-    env.storage()
-        .persistent()
-        .get(&crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()))
-        .unwrap_or(0)
+/// Get a settlement reservation by id.
+pub fn get_reservation(env: &Env, reservation_id: u64) -> Option<crate::types::Reservation> {
+    env.storage().persistent().get(&DataKey::Reservation(reservation_id))
 }
 
-/// Get recurring stream ID by creator and index
-pub fn get_creator_recurring_stream(env: &Env, creator: &Address, index: u32) -> Option<u64> {
+/// Set a settlement reservation.
+pub fn set_reservation(env: &Env, reservation_id: u64, reservation: &crate::types::Reservation) {
     env.storage()
         .persistent()
-        .get(&crate::types::DataKey::RecurringStreamByCreator(creator.clone(), index))
+        .set(&DataKey::Reservation(reservation_id), reservation);
 }
 
-/// Record a new recurring stream for a creator
-pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
-    let count = get_creator_recurring_stream_count(env, creator);
-    env.storage().persistent().set(
-        &crate::types::DataKey::RecurringStreamByCreator(creator.clone(), count),
-        &stream_id,
-    );
-    let new_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(
-        &crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()),
-        &new_count,
-    );
-    Ok(())
+/// Ledgers a reservation may sit `Prepared` before `cleanup_stuck_reservation`
+/// may force-release it. Defaults to `DEFAULT_EPOCH_LEDGERS` (~1 day).
+pub fn get_reservation_timeout_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReservationTimeoutLedgers)
+        .unwrap_or(DEFAULT_EPOCH_LEDGERS)
+}
+
+/// Set the reservation timeout, in ledgers.
+pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────

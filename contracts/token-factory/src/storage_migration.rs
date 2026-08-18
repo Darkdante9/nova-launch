@@ -16,7 +16,7 @@
 
 use crate::storage;
 use crate::types::{ContractVersion, DataKey, Error};
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Bytes, Env, Vec};
 
 // Current schema version - increment when storage layout changes
 const CURRENT_SCHEMA_VERSION: u32 = 2;
@@ -29,7 +29,7 @@ const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub struct DryRunDiff {
     pub old_version: u32,
     pub new_version: u32,
-    pub changes_summary: Vec<u8>,
+    pub changes_summary: Bytes,
 }
 
 /// Check if storage migration is required

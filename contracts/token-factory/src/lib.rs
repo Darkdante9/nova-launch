@@ -1605,7 +1605,7 @@ impl TokenFactory {
     /// `Prepared` before `cleanup_stuck_reservation` may force-release it.
     pub fn set_reservation_timeout_ledgers(env: Env, admin: Address, ledgers: u32) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -3079,7 +3079,7 @@ impl TokenFactory {
         env: &Env,
         owner: &Address,
         vault_id: u64,
-        proof: Option<Bytes>,
+        _proof: Option<Bytes>,
     ) -> Result<i128, Error> {
         let mut vault = match storage::get_vault(env, vault_id) {
             Some(v) => v,

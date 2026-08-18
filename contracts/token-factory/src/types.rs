@@ -285,9 +285,6 @@ pub struct TimelockDelayConfig {
     pub default_delay: u64,
 }
 
-/// Governance configuration
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 /// Configuration for governance voting thresholds
 ///
 /// Defines the quorum and approval requirements for all governance proposals.
@@ -918,6 +915,53 @@ pub enum DataKey {
     CommitRecord(u64, u32),
     /// Bidder index within a session: (session_id, bidder) → u32
     CommitRevealBidderIndex(u64, Address),
+    /// Whether the metadata identity lock has been engaged
+    MetadataLocked,
+    /// Ledger sequence at which the metadata identity lock was engaged
+    MetadataLockedAt,
+    /// Frozen/blacklist state for (token_address, address)
+    FrozenAddress(Address, Address),
+    /// Ledger timestamp at which (token_address, address) was frozen
+    FreezeTimestamp(Address, Address),
+    /// Unfreeze cooldown grace period (seconds) for a token
+    FreezeCooldown(Address),
+    /// RBAC role grant: (token_index, address, role_discriminant) → bool
+    TokenRole(u32, Address, u32),
+    /// Number of metadata history records for a token
+    MetadataHistoryCount(u32),
+    /// Multisig admin-change configuration (signers + threshold)
+    MultiSigConfig,
+    /// Total number of multisig proposals created
+    MultiSigProposalCount,
+    /// Multisig proposal record, keyed by proposal id
+    MultiSigProposal(u64),
+    /// Whether `approver` has approved multisig proposal `proposal_id`
+    MultiSigApproval(u64, Address),
+    /// Whether `caller` is a registered cross-contract trusted caller
+    TrustedCaller(Address),
+    /// FIFO execution queue of proposal ids per `ActionType`
+    ProposalTypeQueue(ActionType),
+    /// Current per-ledger gas budget for the batch scheduler (#1625)
+    LedgerGasBudget,
+    /// Tenants currently holding a pending batch-scheduler continuation
+    FairShareQueue,
+    /// Gas used by `tenant` on `ledger_seq`: (tenant, ledger_seq) → u64
+    TenantLedgerGasUsed(Address, u32),
+    /// Total gas used by all tenants on `ledger_seq`
+    LedgerGasUsed(u32),
+    /// Pending `schedule_batch_reveal` continuation for `creator`
+    RevealContinuation(Address),
+    /// Pending `schedule_batch_settle` continuation for `creator`
+    SettleContinuation(Address),
+    /// Total amount of `token_index` currently reserved (prepared but not
+    /// yet committed/aborted) by the two-phase settlement protocol (#1624)
+    ReservedTotal(u32),
+    /// Total number of settlement reservations created
+    ReservationCount,
+    /// Settlement reservation record, keyed by reservation id
+    Reservation(u64),
+    /// Ledgers a reservation may sit `Prepared` before it can be force-released
+    ReservationTimeoutLedgers,
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1021,9 +1065,6 @@ pub enum ProposalPriority {
     Critical = 3,
 }
 
-/// Entry in the priority execution queue
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 /// Entry in the proposal execution queue
 ///
 /// Represents a proposal that is queued for execution after timelock expires.
@@ -1244,6 +1285,57 @@ impl Error {
     pub const NoValidReveals: Self = Self(114);
     pub const AlreadyFinalised: Self = Self(115);
     pub const TooManyBidders: Self = Self(116);
+    // Compliance reporting errors
+    pub const ComplianceRuleExists: Self = Self(117);
+    pub const ComplianceRuleNotFound: Self = Self(118);
+    pub const ComplianceCheckFailed: Self = Self(119);
+    // Freeze cooldown errors
+    pub const FreezeCooldownActive: Self = Self(120);
+    // Batch scheduler continuation errors
+    pub const ContinuationAlreadyPending: Self = Self(121);
+    pub const NoContinuationPending: Self = Self(122);
+    pub const ContinuationNotYetEligible: Self = Self(123);
+    // Settlement reservation errors
+    pub const ReservationNotFound: Self = Self(124);
+    pub const ReservationNotPending: Self = Self(125);
+    pub const ReservationNotYetStuck: Self = Self(126);
+    // Milestone verification errors (#1133 extension)
+    pub const InvalidProof: Self = Self(127);
+    pub const VerificationUnavailable: Self = Self(128);
+    // Proposal type queue errors
+    pub const ProposalNotAtQueueFront: Self = Self(129);
+    // Vault circuit breaker errors
+    pub const VaultCircuitBreakerActive: Self = Self(130);
+    // Metadata identity lock errors
+    pub const MetadataImmutable: Self = Self(131);
+    // Multisig admin-change errors
+    pub const DuplicateSigners: Self = Self(132);
+
+    /// Stable string name for this error code, for off-chain event payloads
+    /// (see `emit_operation_failed`). Covers the vault entry-point error
+    /// surface (`create_vault`, `claim_vault`, `cancel_vault`,
+    /// `verify_milestone`, `propose_vault_owner_change`,
+    /// `approve_vault_owner_change`); any other code maps to `"UnknownError"`
+    /// rather than failing, so this never breaks when new errors are added.
+    pub fn name(&self) -> &'static str {
+        match self.0 {
+            14 => "ContractPaused",
+            10 => "InvalidAmount",
+            3 => "InvalidParameters",
+            4 => "TokenNotFound",
+            2 => "Unauthorized",
+            8 => "ArithmeticError",
+            21 => "NothingToClaim",
+            20 => "CliffNotReached",
+            95 => "MilestoneUnauthorized",
+            96 => "MilestoneAlreadyVerified",
+            97 => "VaultOwnerChangePending",
+            98 => "VaultOwnerChangeNotFound",
+            99 => "VaultOwnerChangeAlreadyApproved",
+            130 => "VaultCircuitBreakerActive",
+            _ => "UnknownError",
+        }
+    }
 }
 
 impl From<Error> for soroban_sdk::Error {
@@ -1298,8 +1390,6 @@ pub enum VoteChoice {
     Abstain,
 }
 
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// State transitions for a governance proposal lifecycle
 ///
 /// A proposal moves through these states: Created → Active → Succeeded/Defeated
