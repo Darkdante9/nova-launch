@@ -13,8 +13,8 @@ on:
       - ".github/workflows/frontend-e2e.yml"
 
 jobs:
-  campaign-lifecycle-e2e:
-    name: Campaign Lifecycle E2E
+  frontend-lifecycle-e2e:
+    name: Frontend Lifecycle E2E
     runs-on: ubuntu-latest
     defaults:
       run:

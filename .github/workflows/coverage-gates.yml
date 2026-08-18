@@ -21,7 +21,7 @@ env:
 #
 # Module-level minimums
 #   token      — core token creation, minting, burning, metadata
-#   stream     — payment streaming, claim, cancel, vesting
+#   vault      — deposit, lock, claim
 #   governance — proposals, timelock, voting
 #
 # Suite-level minimums
@@ -44,7 +44,7 @@ jobs:
         with:
           toolchain: stable
           components: llvm-tools-preview
-          target: wasm32-unknown-unknown
+          target: wasm32v1-none
           override: true
 
       - name: Cache cargo registry
@@ -157,10 +157,8 @@ jobs:
         run: |
           cargo llvm-cov --tests \
             --test integration_test \
-            --test streaming_integration_test \
             --test governance_e2e_test \
             --test treasury_integration_test \
-            --test stream_lifecycle_integration_test \
             --test pagination_integration_test \
             --json --output-path integration-coverage.json
 
@@ -383,10 +381,8 @@ jobs:
               ("burn",               85.0, "token::burn"),
               ("validation",         80.0, "token::validation"),
               ("types",              80.0, "token::types"),
-              # stream module — payment streaming
-              ("streaming",          80.0, "stream::streaming"),
-              ("vesting",            80.0, "stream::vesting"),
-              ("stream_types",       75.0, "stream::types"),
+              # vault module — deposit/lock/claim
+              ("vault",              80.0, "vault::vault"),
               # governance module — proposals and timelock
               ("governance",         80.0, "governance::governance"),
               ("timelock",           80.0, "governance::timelock"),
@@ -534,7 +530,7 @@ jobs:
           for label, t in [
               ("token::creation / mint / burn", "85%"),
               ("token::validation / types",     "80%"),
-              ("stream::streaming / vesting",   "80%"),
+              ("vault::vault",                  "80%"),
               ("governance::governance / timelock", "80%"),
               ("core::storage / treasury",      "75%"),
               ("core::events / pagination",     "70%"),

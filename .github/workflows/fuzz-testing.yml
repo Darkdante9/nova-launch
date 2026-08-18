@@ -25,7 +25,7 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
-        target: wasm32-unknown-unknown
+        target: wasm32v1-none
         override: true
     
     - name: Cache cargo registry
@@ -50,28 +50,6 @@ jobs:
       id: fuzz-tests
       working-directory: contracts/token-factory
       run: cargo test --release fuzz_ -- --nocapture
-
-    - name: Run burn auction fuzz tests (60 s, legacy-tests feature)
-      id: burn-auction-fuzz
-      working-directory: contracts/token-factory
-      timeout-minutes: 2
-      env:
-        PROPTEST_CASES: "10000"
-      run: |
-        cargo test --release --features legacy-tests fuzz_burn_auction \
-          -- --nocapture 2>&1 | tee fuzz-burn-auction-results.txt
-        echo "## Burn Auction Fuzz Results" >> $GITHUB_STEP_SUMMARY
-        tail -20 fuzz-burn-auction-results.txt >> $GITHUB_STEP_SUMMARY
-
-    - name: Upload burn auction fuzz corpus on failure
-      if: failure() && steps.burn-auction-fuzz.outcome == 'failure'
-      uses: actions/upload-artifact@v7
-      with:
-        name: burn-auction-fuzz-failure-${{ github.run_number }}
-        path: |
-          contracts/token-factory/fuzz-burn-auction-results.txt
-          contracts/token-factory/fuzz/corpus/burn_auction/
-        retention-days: 30
 
     - name: Run edge case tests
       id: edge-tests
@@ -111,7 +89,7 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
-        target: wasm32-unknown-unknown
+        target: wasm32v1-none
         override: true
 
     - name: Cache cargo registry
@@ -131,7 +109,7 @@ jobs:
 
     - name: Build governance.wasm (contractimport! dependency of the fuzz target)
       working-directory: contracts
-      run: cargo build -p governance --release --target wasm32-unknown-unknown
+      run: cargo build -p governance --release --target wasm32v1-none
 
     - name: Run cross-contract invariant fuzz target
       id: cross-contract-fuzz
@@ -149,54 +127,4 @@ jobs:
         path: |
           contracts/token-factory/fuzz/cross-contract-fuzz-results.txt
           contracts/token-factory/fuzz/artifacts/cross_contract_invariants/
-        retention-days: 30
-
-  campaign-stateful-fuzz-nightly:
-    name: Campaign Stateful Fuzz (Nightly High Depth)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-
-    steps:
-    - uses: actions/checkout@v7
-
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: wasm32-unknown-unknown
-        override: true
-
-    - name: Cache cargo registry
-      uses: actions/cache@v6
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v6
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v6
-      with:
-        path: contracts/target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Run high-depth campaign stateful fuzz
-      working-directory: contracts/token-factory
-      env:
-        CAMPAIGN_FUZZ_BASE_SEED: 12648430
-        CAMPAIGN_FUZZ_CASES: 400
-        CAMPAIGN_FUZZ_DEPTH: 600
-        CAMPAIGN_FUZZ_ARTIFACT_DIR: test-artifacts/campaign-fuzz
-      run: cargo test --lib campaign_stateful_fuzz_test::stateful_campaign_fuzz -- --nocapture
-
-    - name: Upload campaign fuzz artifacts
-      if: failure()
-      uses: actions/upload-artifact@v7
-      with:
-        name: campaign-stateful-fuzz-failures-${{ github.run_number }}
-        path: contracts/token-factory/test-artifacts/campaign-fuzz/
         retention-days: 30

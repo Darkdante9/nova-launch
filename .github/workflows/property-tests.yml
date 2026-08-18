@@ -33,7 +33,7 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          target: wasm32-unknown-unknown
+          target: wasm32v1-none
           override: true
 
       - name: Cache cargo registry

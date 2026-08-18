@@ -59,15 +59,15 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       
       - name: Build optimized contract
         working-directory: ./contracts/token-factory
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release --lib
       
       - name: Upload optimized WASM
         uses: actions/upload-artifact@v7
         with:
           name: mainnet-contract-${{ github.ref_name }}
-          path: contracts/token-factory/target/wasm32-unknown-unknown/release/*.wasm
+          path: contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 90

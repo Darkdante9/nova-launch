@@ -22,7 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       
       - name: Cache Cargo
         uses: actions/cache@v6
@@ -49,8 +49,8 @@ jobs:
       
       - name: Build Contracts
         run: |
-          cargo build --target wasm32-unknown-unknown --release
-          soroban contract optimize --wasm target/wasm32-unknown-unknown/release/token_factory.wasm
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
         working-directory: contracts/token-factory
 
   # Stage 2: Security Audit (OWASP Standards)
@@ -107,7 +107,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
@@ -153,15 +153,15 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       
       - name: Install Soroban CLI
         run: cargo install --locked soroban-cli --features opt
       
       - name: Build Contract
         run: |
-          cargo build --target wasm32-unknown-unknown --release
-          soroban contract optimize --wasm target/wasm32-unknown-unknown/release/token_factory.wasm
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
         working-directory: contracts/token-factory
       
       - name: Configure Soroban Network
@@ -200,15 +200,15 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       
       - name: Install Soroban CLI
         run: cargo install --locked soroban-cli --features opt
       
       - name: Build Contract
         run: |
-          cargo build --target wasm32-unknown-unknown --release
-          soroban contract optimize --wasm target/wasm32-unknown-unknown/release/token_factory.wasm
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
         working-directory: contracts/token-factory
       
       - name: Configure Soroban Network
