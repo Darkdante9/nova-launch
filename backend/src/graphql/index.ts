@@ -104,7 +104,6 @@ const LIST_FIELDS = new Set([
   "streams",
   "proposals",
   "votes",
-  "campaigns",
 ]);
 
 function maxQueryDepth(node: any, depth = 0): number {
