@@ -76,7 +76,7 @@ router.get(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid filters",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }
@@ -175,7 +175,7 @@ router.patch(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid update data",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }

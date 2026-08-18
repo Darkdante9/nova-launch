@@ -22,7 +22,7 @@ const tokenFilterSchema = z.object({
 
 const tokenUpdateSchema = z.object({
   flagged: z.boolean().optional(),
-  metadata: z.record(z.any()).optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 // GET /api/admin/tokens - List all tokens with filters
@@ -80,7 +80,7 @@ router.get(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid filters",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }
@@ -171,7 +171,7 @@ router.patch(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid update data",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }

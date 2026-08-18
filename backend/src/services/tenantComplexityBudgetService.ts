@@ -36,8 +36,8 @@ export class TenantComplexityBudgetService {
     }
 
     // Check cache first
-    if (this.budgetCache.has(tenant.id)) {
-      return this.budgetCache.get(tenant.id)!;
+    if (TenantComplexityBudgetService.budgetCache.has(tenant.id)) {
+      return TenantComplexityBudgetService.budgetCache.get(tenant.id)!;
     }
 
     // Query database for override
@@ -46,7 +46,7 @@ export class TenantComplexityBudgetService {
     });
 
     const budget = override?.complexityBudget ?? DEFAULT_COMPLEXITY_BUDGET;
-    this.budgetCache.set(tenant.id, budget);
+    TenantComplexityBudgetService.budgetCache.set(tenant.id, budget);
     return budget;
   }
 
@@ -69,7 +69,7 @@ export class TenantComplexityBudgetService {
     });
 
     // Invalidate cache for this tenant
-    this.budgetCache.delete(tenantId);
+    TenantComplexityBudgetService.budgetCache.delete(tenantId);
 
     return {
       tenantId: updated.tenantId,
@@ -90,7 +90,7 @@ export class TenantComplexityBudgetService {
     });
 
     // Invalidate cache for this tenant
-    this.budgetCache.delete(tenantId);
+    TenantComplexityBudgetService.budgetCache.delete(tenantId);
   }
 
   /**

@@ -56,10 +56,6 @@ export const FACTORY_METHODS = {
   batch_burn: 'batch_burn',
   get_burn_count: 'get_burn_count',
 
-  // Buyback campaigns
-  create_buyback_campaign: 'create_buyback_campaign',
-  get_buyback_campaign: 'get_buyback_campaign',
-
   // Governance
   get_governance_config: 'get_governance_config',
   update_governance_config: 'update_governance_config',
@@ -162,19 +158,6 @@ export interface MintParams {
   token_index: number;  // u32
   to: string;           // Address
   amount: bigint;       // i128
-}
-
-/** Matches `create_buyback_campaign(creator, token_index, budget, ...)` */
-export interface CreateBuybackCampaignParams {
-  creator: string;           // Address
-  token_index: number;       // u32
-  budget: bigint;            // i128
-  start_time: bigint;        // u64
-  end_time: bigint;          // u64
-  min_interval: bigint;      // u64
-  max_slippage_bps: number;  // u32
-  source_token: string;      // Address
-  target_token: string;      // Address
 }
 
 /** Matches `update_governance_config(admin, quorum_percent, approval_percent)` */

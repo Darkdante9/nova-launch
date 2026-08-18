@@ -382,14 +382,6 @@ export class StellarEventListener {
         return;
       }
 
-      // ── Campaign ────────────────────────────────────────────────────────
-      if (kind.startsWith('campaign_')) {
-        await this.processBuybackEvent(event);
-        IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
-        IntegrationMetrics.recordEventProcessed(kind, 'success');
-        return;
-      }
-
       // ── Token ───────────────────────────────────────────────────────────
       const rawTokenEvent = this.toRawTokenEvent(event);
       if (rawTokenEvent) {
@@ -621,26 +613,6 @@ export class StellarEventListener {
         break;
       }
     }
-  }
-
-  /**
-   * Check if event is a campaign/buyback event (registry-backed)
-   */
-  private isBuybackEvent(event: StellarEvent): boolean {
-    const topic0 = event.topic[0];
-    return [
-      'camp_cr_v1', 'camp_cr',
-      'camp_ex_v1', 'camp_ex',
-      'camp_st_v1', 'camp_st',
-      'buyback_exec',
-    ].includes(topic0);
-  }
-
-  /**
-   * Process buyback event
-   */
-  private async processBuybackEvent(event: StellarEvent): Promise<void> {
-     // Placeholder for buyback processing logic
   }
 
   /**

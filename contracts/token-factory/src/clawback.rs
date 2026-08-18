@@ -88,7 +88,7 @@ pub fn clawback(
     storage::set_token_info(env, token_index, &info);
 
     // 8. Emit auditable clawback event
-    events::emit_clawback(env, &info.address, &admin, &from, amount, env.ledger().timestamp());
+    events::emit_clawback_audit(env, &info.address, &admin, &from, amount);
 
     Ok(())
 }

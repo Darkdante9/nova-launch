@@ -13,7 +13,6 @@ import { LanguageSelector } from "./components/LanguageSelector";
 const LandingPage = lazy(() => import("./pages/LandingPage"));
 const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
-const CampaignDashboard = lazy(() => import("./app/dashboard/CampaignDashboard"));
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
 
 // Loading fallback
@@ -85,20 +84,6 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
   }, [pathname]);
 
   const page = useMemo(() => {
-    if (pathname === "/campaign-dashboard") {
-      return (
-        <DashboardLayout
-          wallet={wallet}
-          onConnect={connect}
-          onDisconnect={disconnect}
-          isConnecting={isConnecting}
-          currentPath={pathname}
-        >
-          <CampaignDashboard />
-        </DashboardLayout>
-      );
-    }
-
     if (pathname === "/recurring-payments") {
       return (
         <DashboardLayout

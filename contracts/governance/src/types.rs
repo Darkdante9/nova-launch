@@ -192,4 +192,8 @@ pub enum FinalizationError {
     ProposalNotPassed = 5,
     /// Checked arithmetic overflow during vote-total or threshold computation
     ArithmeticOverflow = 6,
+    /// Proposal has a disbursement but no token-factory address is configured
+    TokenFactoryNotConfigured = 7,
+    /// token-factory rejected or failed to commit the settlement
+    DisbursementFailed = 8,
 }

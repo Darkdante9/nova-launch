@@ -52,7 +52,7 @@ router.get(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid query parameters",
-            details: parsed.error.errors,
+            details: parsed.error.issues,
           }, req.correlationId)
         );
       }

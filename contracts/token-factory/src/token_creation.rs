@@ -168,9 +168,6 @@ pub fn create_token_with_options(
     // Create token
     let token_address = create_token_internal(env, &creator, &params, token_index)?;
 
-    // Credit referral commission if the creator has a registered referrer.
-    crate::referral::credit_commission(env, &creator, token_index, fee_payment);
-
     // Transfer fee to treasury
     let treasury = storage::get_treasury(env).ok_or(Error::MissingTreasury)?;
 

@@ -84,7 +84,7 @@ pub fn get_ledger_gas_budget(env: &Env) -> u64 {
 /// Admin-only: set the per-ledger gas budget shared by the fair-share scheduler.
 pub fn set_ledger_gas_budget(env: &Env, admin: Address, budget: u64) -> Result<(), Error> {
     admin.require_auth();
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -160,8 +160,8 @@ fn execute_reveal_chunk(
     chunk: &Vec<TokenCreationParams>,
     fee_payment: i128,
 ) -> Result<(Vec<u32>, i128), Error> {
-    let base_fee = storage::get_base_fee(env);
-    let metadata_fee = storage::get_metadata_fee(env);
+    let base_fee = storage::get_base_fee(env).ok_or(Error::InvalidBaseFee)?;
+    let metadata_fee = storage::get_metadata_fee(env).ok_or(Error::InvalidMetadataFee)?;
     let start_index = storage::get_token_count(env);
 
     // Phase 1 (stage): validate every item and compute its fee + index.

@@ -164,6 +164,16 @@ pub fn get_token_address(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::TokenAddress)
 }
 
+// ─── Cross-contract settlement (#1624) ────────────────────────────────────
+
+pub fn set_token_factory(env: &Env, address: &Address) {
+    env.storage().instance().set(&DataKey::TokenFactory, address);
+}
+
+pub fn get_token_factory(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::TokenFactory)
+}
+
 // ─── Proposal count ────────────────────────────────────────────────────────
 
 pub fn set_proposal_count(env: &Env, count: u32) {

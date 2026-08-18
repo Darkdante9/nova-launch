@@ -1565,10 +1565,10 @@ pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Addr
 /// Emit AdminTransferProposed event (two-step transfer - step 1)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: adm_prp_v1
+/// **Event Name**: adm_prp1
 ///
 /// **Topics** (indexed):
-/// - Event name: "adm_prp_v1"
+/// - Event name: "adm_prp1"
 ///
 /// **Payload** (non-indexed):
 /// - current_admin: Address - The admin proposing the transfer
@@ -1577,16 +1577,16 @@ pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Addr
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admin: &Address) {
     env.events()
-        .publish((symbol_short!("adm_prp_v1"),), (current_admin.clone(), new_admin.clone()));
+        .publish((symbol_short!("adm_prp1"),), (current_admin.clone(), new_admin.clone()));
 }
 
 /// Emit AdminTransferAccepted event (two-step transfer - step 2)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: adm_acc_v1
+/// **Event Name**: adm_acc1
 ///
 /// **Topics** (indexed):
-/// - Event name: "adm_acc_v1"
+/// - Event name: "adm_acc1"
 ///
 /// **Payload** (non-indexed):
 /// - old_admin: Address - The previous admin
@@ -1595,7 +1595,7 @@ pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admi
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &Address) {
     env.events()
-        .publish((symbol_short!("adm_acc_v1"),), (old_admin.clone(), new_admin.clone()));
+        .publish((symbol_short!("adm_acc1"),), (old_admin.clone(), new_admin.clone()));
 }
 
 /// Emit trusted caller registered event

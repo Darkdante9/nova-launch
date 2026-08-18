@@ -4,15 +4,15 @@ use crate::types;
 use crate::storage;
 use types::Error;
 
-const PROOF_SIGNATURE_OFFSET: usize = 0;
-const PROOF_SIGNATURE_LEN: usize = 64;
-const PROOF_MILESTONE_HASH_OFFSET: usize = 64;
-const PROOF_MILESTONE_HASH_LEN: usize = 32;
-const PROOF_TIMESTAMP_OFFSET: usize = 96;
-const PROOF_TIMESTAMP_LEN: usize = 8;
-const PROOF_ORACLE_ID_OFFSET: usize = 104;
-const PROOF_ORACLE_ID_LEN: usize = 32;
-const TOTAL_PROOF_LEN: usize = 136;
+const PROOF_SIGNATURE_OFFSET: u32 = 0;
+const PROOF_SIGNATURE_LEN: u32 = 64;
+const PROOF_MILESTONE_HASH_OFFSET: u32 = 64;
+const PROOF_MILESTONE_HASH_LEN: u32 = 32;
+const PROOF_TIMESTAMP_OFFSET: u32 = 96;
+const PROOF_TIMESTAMP_LEN: u32 = 8;
+const PROOF_ORACLE_ID_OFFSET: u32 = 104;
+const PROOF_ORACLE_ID_LEN: u32 = 32;
+const TOTAL_PROOF_LEN: u32 = 136;
 
 const STALENESS_THRESHOLD_SECONDS: u64 = 3600;
 
@@ -126,7 +126,7 @@ impl OracleMilestoneVerifier {
 
         for i in 0..32 {
             let proof_byte = proof_hash.get(i as u32).ok_or(Error::InvalidProof)?;
-            if proof_byte != expected_hash.get(i) {
+            if proof_byte != expected_hash.get(i as u32).ok_or(Error::InvalidProof)? {
                 return Err(Error::InvalidProof);
             }
         }

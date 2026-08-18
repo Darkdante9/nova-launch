@@ -298,6 +298,30 @@ impl GovernanceContract {
     ///
     /// # Errors
     /// * [`Error::Unauthorized`] – Caller is not the stored admin.
+    /// Configure the deployed token-factory contract this governance
+    /// instance is authorized to disburse treasury payouts through.
+    ///
+    /// Must be set before executing any proposal with a `disbursement`.
+    ///
+    /// # Arguments
+    /// * `admin`         – Contract admin (must authorize).
+    /// * `token_factory` – Address of the deployed token-factory contract.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`Error::Unauthorized`] – Caller is not the stored admin.
+    pub fn set_token_factory(env: Env, admin: Address, token_factory: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_token_factory(&env, &token_factory);
+        Ok(())
+    }
+
     pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = storage::get_admin(&env);

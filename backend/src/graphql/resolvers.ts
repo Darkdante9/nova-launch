@@ -66,7 +66,6 @@ export const SUBSCRIPTION_TOPICS = {
   proposalStatusChanged: "governance.proposal.statusChanged",
   proposalVoteCast: "governance.proposal.voteCast",
   vaultMatured: "vault.matured",
-  campaignStepExecuted: "campaign.step_executed",
 } as const;
 
 /**
@@ -132,21 +131,6 @@ export interface VaultMaturedPayload extends TenantScopedPayload {
   amount: string | bigint;
   txHash: string;
   timestamp: string;
-}
-
-/** Buyback campaigns have no creator/tenant field — they're keyed by
- *  tokenAddress, not by a tenant-owned creator — so this payload is
- *  intentionally not `TenantScopedPayload`. */
-export interface CampaignStepExecutedPayload {
-  campaignId: number;
-  stepNumber: number;
-  amount: string | bigint;
-  status: string;
-  txHash: string;
-  executedAt: string;
-  totalSteps: number;
-  executedAmount: string | bigint;
-  campaignStatus: string;
 }
 
 /**
@@ -371,50 +355,6 @@ export const resolvers = {
         handleDbError("governanceQueue", err);
       }
     },
-
-    // ── Campaign ─────────────────────────────────────────────────────────────
-
-    /** Fetch a single campaign by its on-chain campaignId. */
-    async campaign(_: unknown, args: { campaignId: number }) {
-      try {
-        const row = await prisma.campaign.findUnique({
-          where: { campaignId: args.campaignId },
-        });
-        return row ? bigintToString(row) : null;
-      } catch (err) {
-        handleDbError("campaign", err);
-      }
-    },
-
-    /** List campaigns with optional filters. */
-    async campaigns(
-      _: unknown,
-      args: {
-        tokenId?: string;
-        creator?: string;
-        status?: string;
-        type?: string;
-        limit?: number;
-        offset?: number;
-      }
-    ) {
-      try {
-        const where: Record<string, unknown> = {};
-        if (args.tokenId) where.tokenId = args.tokenId;
-        if (args.creator) where.creator = args.creator;
-        if (args.status) where.status = args.status;
-        if (args.type) where.type = args.type;
-
-        const rows = await prisma.campaign.findMany({
-          where,
-          orderBy: { createdAt: "desc" },
-          ...paginate(args),
-        });
-        return bigintToString(rows);
-      } catch (err) {
-        handleDbError("campaigns", err);
-      }
-    },
   },
 
   // ── Subscriptions (real-time events via eventBus) ─────────────────────────
@@ -500,20 +440,6 @@ export const resolvers = {
               p.recipientAddress === args.recipientAddress)
         ),
       resolve: (payload: VaultMaturedPayload) => bigintToString(payload),
-    },
-
-    campaignStepExecuted: {
-      subscribe: (
-        _root: unknown,
-        args: { campaignId?: number | null },
-        _ctx: SubscriptionContext
-      ) =>
-        eventBusAsyncIterator<CampaignStepExecutedPayload>(
-          SUBSCRIPTION_TOPICS.campaignStepExecuted,
-          (p) => !args.campaignId || p.campaignId === args.campaignId
-        ),
-      resolve: (payload: CampaignStepExecutedPayload) =>
-        bigintToString(payload),
     },
   },
 
