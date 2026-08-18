@@ -35,6 +35,7 @@
     "lighthouse": "lhci autorun"
   },
   "dependencies": {
+    "@creit.tech/stellar-wallets-kit": "^2.5.0",
     "@prisma/adapter-pg": "^7.5.0",
     "@sentry/browser": "^10.40.0",
     "@stellar/freighter-api": "^6.0.1",
