@@ -1,16 +1,19 @@
-name: Coverage Gates
+name: Contract Coverage & Fuzz
 
 on:
   push:
     branches: [main, develop]
     paths:
       - 'contracts/**'
-      - '.github/workflows/coverage-gates.yml'
+      - '.github/workflows/contract-coverage-fuzz.yml'
   pull_request:
     branches: [main, develop]
     paths:
       - 'contracts/**'
-      - '.github/workflows/coverage-gates.yml'
+      - '.github/workflows/contract-coverage-fuzz.yml'
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
 
 env:
   RUST_BACKTRACE: 1
@@ -580,7 +583,7 @@ jobs:
               }
             }
 
-            const body = `## 📊 Coverage Gate Results\n\n| Suite | Coverage | Threshold | Status |\n|---|---|---|---|\n${rows}\n\n> Coverage gates enforced per module: token (85%), stream (80%), governance (80%), storage/treasury (75%), events/pagination (70%)`;
+            const body = `## 📊 Coverage Gate Results\n\n| Suite | Coverage | Threshold | Status |\n|---|---|---|---|\n${rows}\n\n> Coverage gates enforced per module: token (85%), vault (80%), governance (80%), storage/treasury (75%), events/pagination (70%)`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -628,3 +631,119 @@ jobs:
 
           echo ""
           echo "✅ All coverage gates passed. Merge is allowed."
+
+  # ── 9. Fuzz targets (libFuzzer-driven, independent of coverage gates above) ──
+  fuzz-test:
+    name: Run Fuzz Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: wasm32v1-none
+        override: true
+
+    - name: Cache cargo registry
+      uses: actions/cache@v6
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v6
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v6
+      with:
+        path: contracts/target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run fuzz tests
+      id: fuzz-tests
+      working-directory: contracts/token-factory
+      run: cargo test --release fuzz_ -- --nocapture
+
+    - name: Run edge case tests
+      id: edge-tests
+      working-directory: contracts/token-factory
+      run: cargo test --release edge_cases -- --nocapture
+
+    - name: Upload test artifacts
+      if: failure()
+      run: |
+        chmod +x scripts/upload-test-artifacts.sh
+        ./scripts/upload-test-artifacts.sh
+
+    - name: Upload artifacts to GitHub
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: fuzz-failure-artifacts-${{ github.run_number }}
+        path: test-artifacts/
+        retention-days: 30
+
+    - name: Generate test report
+      if: always()
+      working-directory: contracts/token-factory
+      run: |
+        echo "## Fuzz Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cargo test --release 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY
+
+  cross-contract-invariant-fuzz:
+    name: Cross-Contract Invariant Fuzz (token-factory <-> governance) (#1623)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: wasm32v1-none
+        override: true
+
+    - name: Cache cargo registry
+      uses: actions/cache@v6
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v6
+      with:
+        path: contracts/target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz --locked || true
+
+    - name: Build governance.wasm (contractimport! dependency of the fuzz target)
+      working-directory: contracts
+      run: cargo build -p governance --release --target wasm32v1-none
+
+    - name: Run cross-contract invariant fuzz target
+      id: cross-contract-fuzz
+      working-directory: contracts/token-factory/fuzz
+      run: |
+        cargo fuzz run cross_contract_invariants -- -max_total_time=120 2>&1 | tee cross-contract-fuzz-results.txt
+        echo "## Cross-Contract Invariant Fuzz Results" >> $GITHUB_STEP_SUMMARY
+        tail -30 cross-contract-fuzz-results.txt >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload crash artifacts on failure
+      if: failure() && steps.cross-contract-fuzz.outcome == 'failure'
+      uses: actions/upload-artifact@v7
+      with:
+        name: cross-contract-invariant-fuzz-failure-${{ github.run_number }}
+        path: |
+          contracts/token-factory/fuzz/cross-contract-fuzz-results.txt
+          contracts/token-factory/fuzz/artifacts/cross_contract_invariants/
+        retention-days: 30
