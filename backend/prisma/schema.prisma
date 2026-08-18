@@ -574,3 +574,31 @@ enum ProjectionType {
   STREAM
   VAULT
 }
+
+/// Frontend ErrorBoundary reports, enriched with whatever Stellar transaction
+/// context (txHash/ledger/wallet/route) was in flight when the render error
+/// was caught. Never stores private keys, seed phrases, or signed payloads.
+model ErrorReport {
+  id              String   @id @default(uuid())
+  message         String
+  stack           String?
+  componentStack  String?
+  txHash          String?
+  ledgerSequence  Int?
+  walletAddress   String?
+  route           String?
+  network         String?
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([txHash])
+  @@index([walletAddress])
+}
+
+/// Per-tenant GraphQL query complexity budget override. Allows fine-tuning
+/// complexity limits for individual tenants beyond the global default.
+model TenantComplexityBudget {
+  tenantId         String   @id
+  complexityBudget Int
+  updatedAt        DateTime @updatedAt
+}

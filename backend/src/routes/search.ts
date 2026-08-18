@@ -133,7 +133,7 @@ router.get("/", async (req: Request, res: Response) => {
     return res.status(400).json({
       success: false,
       error: "Invalid parameters",
-      details: parsed.error.errors,
+      details: parsed.error.issues,
     });
   }
 

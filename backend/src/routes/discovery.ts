@@ -183,7 +183,7 @@ router.get("/tokens", discoveryRateLimiter, async (req: Request, res: Response) 
   const parsed = discoveryQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json(
-      errorResponse({ code: "VALIDATION_ERROR", message: "Invalid query parameters", details: parsed.error.errors })
+      errorResponse({ code: "VALIDATION_ERROR", message: "Invalid query parameters", details: parsed.error.issues })
     );
   }
 

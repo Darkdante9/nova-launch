@@ -72,7 +72,7 @@ import {
   type ComplexityEstimator,
 } from "graphql-query-complexity";
 import { WebSocketServer } from "ws";
-import { useServer } from "graphql-ws/lib/use/ws";
+import { useServer } from "graphql-ws/use/ws";
 import type { Server } from "http";
 import { typeDefs } from "./schema";
 import { resolvers } from "./resolvers";
@@ -225,7 +225,7 @@ export function attachGraphqlSubscriptions(
       schema,
       execute,
       subscribe,
-      rootValue,
+      roots: { query: rootValue, mutation: rootValue, subscription: rootValue },
 
       // Validate the JWT on the connection_init handshake and stash the tenant.
       onConnect: (ctx) => {
@@ -247,9 +247,9 @@ export function attachGraphqlSubscriptions(
       }),
 
       // Enforce the per-connection concurrent-subscription cap.
-      onSubscribe: (ctx, msg) => {
+      onSubscribe: (ctx, id, payload) => {
         if (
-          !isSubscriptionOperation(msg.payload.query, msg.payload.operationName)
+          !isSubscriptionOperation(payload.query, payload.operationName)
         ) {
           return undefined; // queries/mutations don't count toward the cap
         }
@@ -263,12 +263,12 @@ export function attachGraphqlSubscriptions(
             ),
           ];
         }
-        extra.activeSubscriptionIds.add(msg.id);
+        extra.activeSubscriptionIds.add(id);
         return undefined;
       },
 
       // Track outbound message queue depth; disconnect slow consumers.
-      onNext: (ctx, _msg, _args, result) => {
+      onNext: (ctx, _id, _payload, _args, result) => {
         const extra = ctx.extra as unknown as ConnectionExtra;
         extra.queueDepth = (extra.queueDepth ?? 0) + 1;
 
@@ -286,18 +286,18 @@ export function attachGraphqlSubscriptions(
       },
 
       // Decrement depth when a message is acknowledged (onComplete of a subscribe op).
-      onComplete: (ctx, msg) => {
+      onComplete: (ctx, id) => {
         const extra = ctx.extra as unknown as ConnectionExtra;
-        extra?.activeSubscriptionIds?.delete(msg.id);
+        extra?.activeSubscriptionIds?.delete(id);
         if (extra?.queueDepth !== undefined && extra.queueDepth > 0) {
           extra.queueDepth -= 1;
         }
       },
 
-      onError: (ctx, msg) => {
+      onError: (ctx, id) => {
         (
           ctx.extra as unknown as ConnectionExtra
-        )?.activeSubscriptionIds?.delete(msg.id);
+        )?.activeSubscriptionIds?.delete(id);
       },
     },
     wsServer
