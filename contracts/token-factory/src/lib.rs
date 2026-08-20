@@ -15,6 +15,9 @@ mod ipfs_pinning;
 
 mod batch_operations;
 mod batch_scheduler;
+mod bridge;
+#[cfg(test)]
+mod bridge_test;
 mod burn;
 mod settlement;
 mod clawback;
@@ -161,7 +164,7 @@ mod vault_balance_invariant_proptest;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
-    AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
+    AuctionStatus, BatchScheduleResult, BridgeLock, BurnAuction, BuybackCampaign, CampaignStatus,
     ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
     PreflightItemResult, Reservation, StreamInfo, StreamPage, StreamParams, TokenCreationParams,
     TokenInfo, TokenStats, Vault, VaultStatus,
@@ -4145,6 +4148,54 @@ impl TokenFactory {
         events::emit_multisig_executed(env, proposal.id, executor);
 
         Ok(())
+    }
+
+    // ── Cross-chain bridge (lock/release primitive) ─────────────────────
+
+    /// Lock `amount` of `token` in contract custody for a cross-chain
+    /// transfer, returning the assigned nonce. Emits `brg_lck1`
+    /// ("bridge/initiated"). See `bridge.rs` for the trust-model notes.
+    pub fn lock_tokens(
+        env: Env,
+        caller: Address,
+        token: Address,
+        amount: i128,
+        destination_chain: String,
+        destination_address: Bytes,
+    ) -> Result<u64, Error> {
+        bridge::lock_tokens(
+            &env,
+            &caller,
+            &token,
+            amount,
+            destination_chain,
+            destination_address,
+        )
+    }
+
+    /// Release `amount` of `token` to `recipient`, authorized by `admin` and
+    /// the single-use `nonce` supplied verbatim from the source-chain lock.
+    /// Emits `brg_rel1` ("bridge/completed").
+    pub fn release_tokens(
+        env: Env,
+        admin: Address,
+        nonce: u64,
+        token: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        bridge::release_tokens(&env, &admin, nonce, &token, &recipient, amount)
+    }
+
+    /// Look up a bridge lock record by nonce (source-side query).
+    pub fn get_bridge_lock(env: Env, nonce: u64) -> Option<BridgeLock> {
+        bridge::get_bridge_lock(&env, nonce)
+    }
+
+    /// Whether `nonce` has already been consumed by `release_tokens`
+    /// (destination-side query).
+    pub fn is_bridge_nonce_released(env: Env, nonce: u64) -> bool {
+        bridge::is_nonce_released(&env, nonce)
     }
 
 }

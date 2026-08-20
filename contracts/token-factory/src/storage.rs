@@ -1,8 +1,8 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{
-    BuybackCampaign, DataKey, Error, FactoryState, Reservation, RevealBatchContinuation,
-    SettleBatchContinuation, StreamCursor, TokenInfo,
+    BridgeLock, BuybackCampaign, DataKey, Error, FactoryState, Reservation,
+    RevealBatchContinuation, SettleBatchContinuation, StreamCursor, TokenInfo,
 };
 
 // ============================================================
@@ -2208,6 +2208,68 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
     env.storage()
         .instance()
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
+}
+
+// ── Cross-chain bridge storage (lock/release primitive) ─────────────────────
+
+/// Assign and return the next monotonic bridge nonce, advancing the counter.
+pub fn get_next_bridge_nonce(env: &Env) -> Result<u64, Error> {
+    let nonce = env
+        .storage()
+        .instance()
+        .get(&DataKey::BridgeNextNonce)
+        .unwrap_or(0_u64);
+    let next = nonce.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::BridgeNextNonce, &next);
+    Ok(nonce)
+}
+
+/// Get a bridge lock record by nonce.
+pub fn get_bridge_lock(env: &Env, nonce: u64) -> Option<BridgeLock> {
+    env.storage().persistent().get(&DataKey::BridgeLock(nonce))
+}
+
+/// Persist a bridge lock record, keyed by its own nonce.
+pub fn set_bridge_lock(env: &Env, lock: &BridgeLock) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::BridgeLock(lock.nonce), lock);
+}
+
+/// Whether `nonce` has already been consumed by `release_tokens`.
+pub fn is_bridge_nonce_released(env: &Env, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BridgeReleased(nonce))
+        .unwrap_or(false)
+}
+
+/// Mark `nonce` as released, so a later `release_tokens` call rejects it as a replay.
+pub fn set_bridge_nonce_released(env: &Env, nonce: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::BridgeReleased(nonce), &true);
+}
+
+/// Cumulative amount of `token` ever locked via `lock_tokens`.
+pub fn get_bridge_locked_total(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BridgeLockedTotal(token.clone()))
+        .unwrap_or(0)
+}
+
+/// Add `amount` to the cumulative locked total for `token`.
+pub fn add_bridge_locked_total(env: &Env, token: &Address, amount: i128) -> Result<(), Error> {
+    let updated = get_bridge_locked_total(env, token)
+        .checked_add(amount)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::BridgeLockedTotal(token.clone()), &updated);
+    Ok(())
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
