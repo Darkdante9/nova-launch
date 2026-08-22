@@ -2210,6 +2210,51 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
+// ── Oracle price feed storage ─────────────────────────────────────────────
+
+/// Get the global oracle configuration, if it has been set via `configure_oracle`.
+pub fn get_oracle_config(env: &Env) -> Option<crate::types::OracleConfig> {
+    env.storage().instance().get(&DataKey::OracleConfig)
+}
+
+/// Set the global oracle configuration.
+pub fn set_oracle_config(env: &Env, config: &crate::types::OracleConfig) {
+    env.storage().instance().set(&DataKey::OracleConfig, config);
+}
+
+/// Returns `true` if `source` is authorized to submit oracle prices.
+pub fn is_oracle_source_authorized(env: &Env, source: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleAuthorizedSource(source.clone()))
+        .unwrap_or(false)
+}
+
+/// Authorize or deauthorize `source` as an oracle price submitter.
+pub fn set_oracle_source_authorized(env: &Env, source: &Address, authorized: bool) {
+    env.storage().instance().set(
+        &DataKey::OracleAuthorizedSource(source.clone()),
+        &authorized,
+    );
+}
+
+/// Get the latest submitted price for `asset`, if any.
+pub fn get_oracle_price(env: &Env, asset: &Address) -> Option<crate::types::PriceData> {
+    let key = DataKey::OraclePrice(asset.clone());
+    let val = env.storage().persistent().get(&key);
+    if val.is_some() {
+        bump_persistent(env, &key);
+    }
+    val
+}
+
+/// Store the latest submitted price for `asset`.
+pub fn set_oracle_price(env: &Env, asset: &Address, price: &crate::types::PriceData) {
+    let key = DataKey::OraclePrice(asset.clone());
+    env.storage().persistent().set(&key, price);
+    bump_persistent(env, &key);
+}
+
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
 //
 // Each test calls a getter *before* `initialize()` has been invoked and

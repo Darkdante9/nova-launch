@@ -689,12 +689,10 @@ pub struct PriceData {
 ///
 /// # Fields
 /// * `max_age_seconds` - Maximum acceptable age of a price before it is considered stale
-/// * `min_sources` - Minimum number of authorized sources that must have submitted a price
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
     pub max_age_seconds: u64,
-    pub min_sources: u32,
 }
 
 /// Batch fee update structure for Phase 2 optimization
@@ -962,6 +960,13 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
+    // ── Oracle price feed ─────────────────────────────────────────────────
+    /// Global oracle configuration (max staleness window).
+    OracleConfig,
+    /// Whether `source` is authorized to submit oracle prices.
+    OracleAuthorizedSource(Address),
+    /// Latest price observation submitted for `asset`.
+    OraclePrice(Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1310,6 +1315,13 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
+    // Oracle price feed errors
+    pub const OracleUnauthorizedSource: Self = Self(133);
+    pub const OraclePriceStale: Self = Self(134);
+    pub const OracleInvalidPrice: Self = Self(135);
+    pub const OraclePriceNotFound: Self = Self(136);
+    pub const OracleInvalidConfig: Self = Self(137);
+    pub const OracleNotConfigured: Self = Self(138);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1333,6 +1345,12 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
+            133 => "OracleUnauthorizedSource",
+            134 => "OraclePriceStale",
+            135 => "OracleInvalidPrice",
+            136 => "OraclePriceNotFound",
+            137 => "OracleInvalidConfig",
+            138 => "OracleNotConfigured",
             _ => "UnknownError",
         }
     }
