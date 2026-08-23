@@ -110,7 +110,7 @@ v1Router.use("/stats", limiter, statsRoutes);
 v1Router.use("/governance", limiter, governanceRoutes);
 v1Router.use("/errors", limiter, errorRoutes);
 v1Router.use("/vaults", limiter, vaultRoutes);
-  v1Router.use("/campaigns", limiter, campaignRoutes);
+v1Router.use("/campaigns", limiter, campaignRoutes);
 v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
