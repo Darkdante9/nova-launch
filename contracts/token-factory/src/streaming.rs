@@ -179,7 +179,9 @@ fn total_unlocked(stream: &StreamInfo, now: u64) -> Result<i128, Error> {
         }
     }
 
-    vested.checked_add(milestone_unlocked).ok_or(Error::ArithmeticError)
+    vested
+        .checked_add(milestone_unlocked)
+        .ok_or(Error::ArithmeticError)
 }
 
 /// Claim the currently-vested (and unclaimed) balance of a stream.
@@ -434,11 +436,11 @@ mod tests {
         let env = Env::default();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let _ = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let _ = create_stream(&env, &creator, &p, None, Vec::new(&env));
         });
     }
 
@@ -448,13 +450,13 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut p = params(&env, &recipient, token_index);
-        p.total_amount = 0;
-        let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
-        assert_eq!(result, Err(Error::InvalidAmount));
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.total_amount = 0;
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidAmount));
         });
     }
 
@@ -464,14 +466,14 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut p = params(&env, &recipient, token_index);
-        p.end_time = 0;
-        p.start_time = 100;
-        let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
-        assert_eq!(result, Err(Error::InvalidStreamSchedule));
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.end_time = 0;
+            p.start_time = 100;
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidStreamSchedule));
         });
     }
 
@@ -481,12 +483,12 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = params(&env, &recipient, 999);
-        let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
-        assert_eq!(result, Err(Error::TokenNotFound));
+            setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, 999);
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::TokenNotFound));
         });
     }
 
@@ -501,13 +503,19 @@ mod tests {
         // "frame is already authorized" guard.
         let (creator, recipient, token_index) = env.as_contract(&contract_id, || {
             let (_, token_index) = setup(&env);
-            (Address::generate(&env), Address::generate(&env), token_index)
+            (
+                Address::generate(&env),
+                Address::generate(&env),
+                token_index,
+            )
         });
         let p = params(&env, &recipient, token_index);
-        let id1 =
-            env.as_contract(&contract_id, || create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap());
-        let id2 =
-            env.as_contract(&contract_id, || create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap());
+        let id1 = env.as_contract(&contract_id, || {
+            create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap()
+        });
+        let id2 = env.as_contract(&contract_id, || {
+            create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap()
+        });
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
     }
@@ -518,10 +526,10 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        setup(&env);
-        let creator = Address::generate(&env);
-        let result = batch_create_streams(&env, &creator, Vec::new(&env));
-        assert_eq!(result, Err(Error::InvalidParameters));
+            setup(&env);
+            let creator = Address::generate(&env);
+            let result = batch_create_streams(&env, &creator, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidParameters));
         });
     }
 
@@ -531,15 +539,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut items = Vec::new(&env);
-        for _ in 0..(MAX_BATCH_SIZE + 1) {
-            items.push_back(params(&env, &recipient, token_index));
-        }
-        let result = batch_create_streams(&env, &creator, items);
-        assert_eq!(result, Err(Error::BatchTooLarge));
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            for _ in 0..(MAX_BATCH_SIZE + 1) {
+                items.push_back(params(&env, &recipient, token_index));
+            }
+            let result = batch_create_streams(&env, &creator, items);
+            assert_eq!(result, Err(Error::BatchTooLarge));
         });
     }
 
@@ -549,19 +557,19 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut items = Vec::new(&env);
-        items.push_back(params(&env, &recipient, token_index));
-        let mut bad = params(&env, &recipient, token_index);
-        bad.total_amount = 0;
-        items.push_back(bad);
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            items.push_back(params(&env, &recipient, token_index));
+            let mut bad = params(&env, &recipient, token_index);
+            bad.total_amount = 0;
+            items.push_back(bad);
 
-        let result = batch_create_streams(&env, &creator, items);
-        assert_eq!(result, Err(Error::InvalidAmount));
-        // No stream should have been written despite the first item being valid.
-        assert!(storage::get_stream(&env, 1).is_none());
+            let result = batch_create_streams(&env, &creator, items);
+            assert_eq!(result, Err(Error::InvalidAmount));
+            // No stream should have been written despite the first item being valid.
+            assert!(storage::get_stream(&env, 1).is_none());
         });
     }
 
@@ -571,15 +579,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut items = Vec::new(&env);
-        for _ in 0..5 {
-            items.push_back(params(&env, &recipient, token_index));
-        }
-        let ids = batch_create_streams(&env, &creator, items).unwrap();
-        assert_eq!(ids.len(), 5);
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            for _ in 0..5 {
+                items.push_back(params(&env, &recipient, token_index));
+            }
+            let ids = batch_create_streams(&env, &creator, items).unwrap();
+            assert_eq!(ids.len(), 5);
         });
     }
 
@@ -589,16 +597,16 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut p = params(&env, &recipient, token_index);
-        p.cliff_time = 500;
-        let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.cliff_time = 500;
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
 
-        env.ledger().with_mut(|li| li.timestamp = 100);
-        let result = claim_stream(&env, &recipient, id);
-        assert_eq!(result, Err(Error::NothingToClaim));
+            env.ledger().with_mut(|li| li.timestamp = 100);
+            let result = claim_stream(&env, &recipient, id);
+            assert_eq!(result, Err(Error::NothingToClaim));
         });
     }
 
@@ -608,16 +616,16 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
 
-        env.ledger().with_mut(|li| li.timestamp = 1_000);
-        let result = claim_stream(&env, &attacker, id);
-        assert_eq!(result, Err(Error::Unauthorized));
+            env.ledger().with_mut(|li| li.timestamp = 1_000);
+            let result = claim_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
         });
     }
 
@@ -627,10 +635,10 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        setup(&env);
-        let recipient = Address::generate(&env);
-        let result = claim_stream(&env, &recipient, 999);
-        assert_eq!(result, Err(Error::StreamNotFound));
+            setup(&env);
+            let recipient = Address::generate(&env);
+            let result = claim_stream(&env, &recipient, 999);
+            assert_eq!(result, Err(Error::StreamNotFound));
         });
     }
 
@@ -640,15 +648,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
 
-        let result = cancel_stream(&env, &attacker, id);
-        assert_eq!(result, Err(Error::Unauthorized));
+            let result = cancel_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
         });
     }
 
@@ -710,7 +718,9 @@ mod tests {
         env.ledger().with_mut(|li| li.timestamp = 1_000);
         env.as_contract(&contract_id, || claim_stream(&env, &recipient, id).unwrap());
 
-        let result = env.as_contract(&contract_id, || update_stream_metadata(&env, &creator, id, None));
+        let result = env.as_contract(&contract_id, || {
+            update_stream_metadata(&env, &creator, id, None)
+        });
         assert_eq!(result, Err(Error::StreamMetadataLocked));
     }
 
@@ -720,14 +730,14 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
 
-        let result = update_stream_metadata(&env, &recipient, id, None);
-        assert_eq!(result, Err(Error::Unauthorized));
+            let result = update_stream_metadata(&env, &recipient, id, None);
+            assert_eq!(result, Err(Error::Unauthorized));
         });
     }
 
@@ -737,23 +747,23 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let oracle = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let mut milestones = Vec::new(&env);
-        milestones.push_back(Milestone {
-            description: String::from_str(&env, "milestone 1"),
-            oracle_address: oracle.clone(),
-            unlock_amount: 100,
-            verified: false,
-        });
-        let id = create_stream(&env, &creator, &p, None, milestones).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let mut milestones = Vec::new(&env);
+            milestones.push_back(Milestone {
+                description: String::from_str(&env, "milestone 1"),
+                oracle_address: oracle.clone(),
+                unlock_amount: 100,
+                verified: false,
+            });
+            let id = create_stream(&env, &creator, &p, None, milestones).unwrap();
 
-        let result = verify_stream_milestone(&env, &attacker, id, 0);
-        assert_eq!(result, Err(Error::UnauthorizedMilestoneOracle));
+            let result = verify_stream_milestone(&env, &attacker, id, 0);
+            assert_eq!(result, Err(Error::UnauthorizedMilestoneOracle));
         });
     }
 
@@ -779,8 +789,12 @@ mod tests {
             (oracle, id)
         });
 
-        env.as_contract(&contract_id, || verify_stream_milestone(&env, &oracle, id, 0).unwrap());
-        let result = env.as_contract(&contract_id, || verify_stream_milestone(&env, &oracle, id, 0));
+        env.as_contract(&contract_id, || {
+            verify_stream_milestone(&env, &oracle, id, 0).unwrap()
+        });
+        let result = env.as_contract(&contract_id, || {
+            verify_stream_milestone(&env, &oracle, id, 0)
+        });
         assert_eq!(result, Err(Error::MilestoneAlreadyVerified));
     }
 
@@ -790,15 +804,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let (_, token_index) = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = params(&env, &recipient, token_index);
-        let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
 
-        let oracle = Address::generate(&env);
-        let result = verify_stream_milestone(&env, &oracle, id, 0);
-        assert_eq!(result, Err(Error::MilestoneNotFound));
+            let oracle = Address::generate(&env);
+            let result = verify_stream_milestone(&env, &oracle, id, 0);
+            assert_eq!(result, Err(Error::MilestoneNotFound));
         });
     }
 }

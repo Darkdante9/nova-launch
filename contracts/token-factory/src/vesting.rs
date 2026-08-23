@@ -115,7 +115,10 @@ mod tests {
     fn cliff_equal_to_end_time_all_or_nothing() {
         // cliff == end_time: 0 right up until end_time, then the full amount.
         assert_eq!(linear_vested_amount(500, 0, 1_000, 1_000, 999).unwrap(), 0);
-        assert_eq!(linear_vested_amount(500, 0, 1_000, 1_000, 1_000).unwrap(), 500);
+        assert_eq!(
+            linear_vested_amount(500, 0, 1_000, 1_000, 1_000).unwrap(),
+            500
+        );
     }
 
     #[test]
@@ -177,8 +180,17 @@ mod tests {
 
     #[test]
     fn validate_schedule_rejects_malformed() {
-        assert_eq!(validate_schedule(1_000, 0, 500), Err(Error::InvalidStreamSchedule));
-        assert_eq!(validate_schedule(0, 1_000, 1_001), Err(Error::InvalidStreamSchedule));
-        assert_eq!(validate_schedule(0, 0, 0), Err(Error::InvalidStreamSchedule));
+        assert_eq!(
+            validate_schedule(1_000, 0, 500),
+            Err(Error::InvalidStreamSchedule)
+        );
+        assert_eq!(
+            validate_schedule(0, 1_000, 1_001),
+            Err(Error::InvalidStreamSchedule)
+        );
+        assert_eq!(
+            validate_schedule(0, 0, 0),
+            Err(Error::InvalidStreamSchedule)
+        );
     }
 }

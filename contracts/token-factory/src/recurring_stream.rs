@@ -66,7 +66,8 @@ pub fn create_recurring_stream(
         end_time: now_ts.saturating_add(1),
         cliff_time: now_ts,
     };
-    let first_child = streaming::mint_stream(env, creator, &first_child_params, None, Vec::new(env));
+    let first_child =
+        streaming::mint_stream(env, creator, &first_child_params, None, Vec::new(env));
 
     let mut child_streams = Vec::new(env);
     child_streams.push_back(first_child);
@@ -128,8 +129,8 @@ pub fn trigger_recurring_period(
         return Err(Error::ContractPaused);
     }
 
-    let mut recurring =
-        storage::get_recurring_stream(env, recurring_stream_id).ok_or(Error::RecurringStreamNotFound)?;
+    let mut recurring = storage::get_recurring_stream(env, recurring_stream_id)
+        .ok_or(Error::RecurringStreamNotFound)?;
 
     if recurring.cancelled {
         return Err(Error::RecurringStreamCancelled);
@@ -144,7 +145,8 @@ pub fn trigger_recurring_period(
         return Err(Error::RecurringPeriodNotElapsed);
     }
 
-    let within_total = recurring.total_periods == 0 || recurring.periods_created < recurring.total_periods;
+    let within_total =
+        recurring.total_periods == 0 || recurring.periods_created < recurring.total_periods;
     if !within_total && !recurring.auto_renew_enabled {
         return Err(Error::RecurringStreamLimitReached);
     }
@@ -169,7 +171,8 @@ pub fn trigger_recurring_period(
         end_time: now_ts.saturating_add(1),
         cliff_time: now_ts,
     };
-    let child_id = streaming::mint_stream(env, &recurring.creator, &child_params, None, Vec::new(env));
+    let child_id =
+        streaming::mint_stream(env, &recurring.creator, &child_params, None, Vec::new(env));
 
     recurring.child_streams.push_back(child_id);
     recurring.periods_created = recurring
@@ -179,7 +182,12 @@ pub fn trigger_recurring_period(
     recurring.current_period_start_ledger = now_ledger;
     storage::set_recurring_stream(env, &recurring);
 
-    events::emit_recurring_period_triggered(env, recurring_stream_id, child_id, recurring.periods_created);
+    events::emit_recurring_period_triggered(
+        env,
+        recurring_stream_id,
+        child_id,
+        recurring.periods_created,
+    );
 
     Ok(child_id)
 }
@@ -203,8 +211,8 @@ pub fn cancel_recurring_stream(
         return Err(Error::ContractPaused);
     }
 
-    let mut recurring =
-        storage::get_recurring_stream(env, recurring_stream_id).ok_or(Error::RecurringStreamNotFound)?;
+    let mut recurring = storage::get_recurring_stream(env, recurring_stream_id)
+        .ok_or(Error::RecurringStreamNotFound)?;
 
     let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *actor != recurring.creator && *actor != admin {
@@ -269,13 +277,13 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let token_index = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut p = recurring_params(&recipient);
-        p.period_ledgers = 0;
-        let result = create_recurring_stream(&env, &creator, &p, token_index);
-        assert_eq!(result, Err(Error::InvalidParameters));
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.period_ledgers = 0;
+            let result = create_recurring_stream(&env, &creator, &p, token_index);
+            assert_eq!(result, Err(Error::InvalidParameters));
         });
     }
 
@@ -285,13 +293,13 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let token_index = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let mut p = recurring_params(&recipient);
-        p.total_periods = MAX_RECURRING_PERIODS + 1;
-        let result = create_recurring_stream(&env, &creator, &p, token_index);
-        assert_eq!(result, Err(Error::RecurringStreamLimitReached));
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.total_periods = MAX_RECURRING_PERIODS + 1;
+            let result = create_recurring_stream(&env, &creator, &p, token_index);
+            assert_eq!(result, Err(Error::RecurringStreamLimitReached));
         });
     }
 
@@ -301,15 +309,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let token_index = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = recurring_params(&recipient);
-        let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
 
-        let recurring = storage::get_recurring_stream(&env, id).unwrap();
-        assert_eq!(recurring.periods_created, 1);
-        assert_eq!(recurring.child_streams.len(), 1);
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 1);
+            assert_eq!(recurring.child_streams.len(), 1);
         });
     }
 
@@ -333,7 +341,9 @@ mod tests {
         });
 
         env.ledger().with_mut(|li| li.sequence_number = 105); // only 5 elapsed, period is 10
-        let result = env.as_contract(&contract_id, || trigger_recurring_period(&env, &creator, id));
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
         assert_eq!(result, Err(Error::RecurringPeriodNotElapsed));
     }
 
@@ -343,22 +353,22 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        env.ledger().with_mut(|li| li.sequence_number = 100);
-        let token_index = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let p = recurring_params(&recipient);
-        let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            env.ledger().with_mut(|li| li.sequence_number = 100);
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
 
-        env.ledger().with_mut(|li| li.sequence_number = 110);
-        // Recipient (not creator) triggers — should succeed without creator's
-        // live signature, since mint_stream (not create_stream) is used.
-        let child_id = trigger_recurring_period(&env, &recipient, id).unwrap();
-        assert!(child_id > 0);
+            env.ledger().with_mut(|li| li.sequence_number = 110);
+            // Recipient (not creator) triggers — should succeed without creator's
+            // live signature, since mint_stream (not create_stream) is used.
+            let child_id = trigger_recurring_period(&env, &recipient, id).unwrap();
+            assert!(child_id > 0);
 
-        let recurring = storage::get_recurring_stream(&env, id).unwrap();
-        assert_eq!(recurring.periods_created, 2);
-        assert_eq!(recurring.child_streams.len(), 2);
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 2);
+            assert_eq!(recurring.child_streams.len(), 2);
         });
     }
 
@@ -379,10 +389,14 @@ mod tests {
         });
 
         env.ledger().with_mut(|li| li.sequence_number = 10);
-        env.as_contract(&contract_id, || trigger_recurring_period(&env, &creator, id).unwrap()); // period 2 (of 2)
+        env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        }); // period 2 (of 2)
 
         env.ledger().with_mut(|li| li.sequence_number = 20);
-        let result = env.as_contract(&contract_id, || trigger_recurring_period(&env, &creator, id));
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
         assert_eq!(result, Err(Error::RecurringStreamLimitReached));
     }
 
@@ -401,10 +415,14 @@ mod tests {
             (creator, id)
         });
 
-        env.as_contract(&contract_id, || cancel_recurring_stream(&env, &creator, id).unwrap());
+        env.as_contract(&contract_id, || {
+            cancel_recurring_stream(&env, &creator, id).unwrap()
+        });
 
         env.ledger().with_mut(|li| li.sequence_number = 10);
-        let result = env.as_contract(&contract_id, || trigger_recurring_period(&env, &creator, id));
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
         assert_eq!(result, Err(Error::RecurringStreamCancelled));
     }
 
@@ -414,15 +432,15 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-        let token_index = setup(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let p = recurring_params(&recipient);
-        let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
 
-        let result = cancel_recurring_stream(&env, &attacker, id);
-        assert_eq!(result, Err(Error::Unauthorized));
+            let result = cancel_recurring_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
         });
     }
 
@@ -440,7 +458,9 @@ mod tests {
             (creator, id)
         });
 
-        env.as_contract(&contract_id, || cancel_recurring_stream(&env, &creator, id).unwrap());
+        env.as_contract(&contract_id, || {
+            cancel_recurring_stream(&env, &creator, id).unwrap()
+        });
         let result = env.as_contract(&contract_id, || cancel_recurring_stream(&env, &creator, id));
         assert_eq!(result, Err(Error::RecurringStreamCancelled));
     }
