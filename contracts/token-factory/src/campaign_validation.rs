@@ -14,7 +14,7 @@ pub mod constants {
     pub const MIN_BUDGET: i128 = 10_000_000;
 
     /// Maximum campaign budget (1 billion XLM, in stroops).
-    pub const MAX_BUDGET: i128 = 1_000_000_000_0000000;
+    pub const MAX_BUDGET: i128 = 10_000_000_000_000_000;
 
     /// Minimum campaign duration (1 hour).
     pub const MIN_DURATION: u64 = 3600;
@@ -50,7 +50,7 @@ pub mod constants {
 /// * `InvalidBudget` - not positive, or outside
 ///   [`constants::MIN_BUDGET`]..=[`constants::MAX_BUDGET`]
 pub fn validate_budget(budget: i128) -> Result<(), Error> {
-    if budget < constants::MIN_BUDGET || budget > constants::MAX_BUDGET {
+    if !(constants::MIN_BUDGET..=constants::MAX_BUDGET).contains(&budget) {
         return Err(Error::InvalidBudget);
     }
     Ok(())
@@ -95,7 +95,7 @@ pub fn validate_time_window(env: &Env, start_time: u64, end_time: u64) -> Result
     }
 
     let duration = end_time - start_time;
-    if duration < constants::MIN_DURATION || duration > constants::MAX_DURATION {
+    if !(constants::MIN_DURATION..=constants::MAX_DURATION).contains(&duration) {
         return Err(Error::InvalidTimeWindow);
     }
 
@@ -108,7 +108,7 @@ pub fn validate_time_window(env: &Env, start_time: u64, end_time: u64) -> Result
 /// * `InvalidParameters` - outside
 ///   [`constants::MIN_INTERVAL`]..=[`constants::MAX_INTERVAL`]
 pub fn validate_min_interval(min_interval: u64) -> Result<(), Error> {
-    if min_interval < constants::MIN_INTERVAL || min_interval > constants::MAX_INTERVAL {
+    if !(constants::MIN_INTERVAL..=constants::MAX_INTERVAL).contains(&min_interval) {
         return Err(Error::InvalidParameters);
     }
     Ok(())

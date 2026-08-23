@@ -386,7 +386,10 @@ fn burn_acquired(env: &Env, token_index: u32, amount: i128) -> Result<i128, Erro
         .total_burned
         .checked_add(amount)
         .ok_or(Error::ArithmeticError)?;
-    info.burn_count = info.burn_count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    info.burn_count = info
+        .burn_count
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
 
     storage::set_token_info(env, token_index, &info);
     let _ = crate::snapshot::record_supply_snapshot(env, token_index, info.total_supply);
