@@ -1894,3 +1894,114 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
     env.events()
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
+
+// ── Commit-reveal auction tie-breaking events (#1626) ────────────────────────
+
+/// Emitted when a commit-reveal session is created via
+/// `create_commit_reveal_session`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_open1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_open1"
+/// - session_id: u64 - The newly created session id
+///
+/// **Payload** (non-indexed):
+/// - creator: Address - The admin that created the session
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - commit_start: u64 - Timestamp the commit window opens
+/// - commit_end: u64 - Timestamp the commit window closes / reveal window opens
+/// - reveal_end: u64 - Timestamp the reveal window closes
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_session_created(
+    env: &Env,
+    session_id: u64,
+    creator: &Address,
+    auction_id: u64,
+    commit_start: u64,
+    commit_end: u64,
+    reveal_end: u64,
+) {
+    env.events().publish(
+        (symbol_short!("cr_open1"), session_id),
+        (
+            creator.clone(),
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
+        ),
+    );
+}
+
+/// Emitted when a bidder submits a commitment via `submit_commitment`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_cmit1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_cmit1"
+/// - session_id: u64 - The session the commitment was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that committed
+/// - index: u32 - The bidder's commitment index (used for hash-chain ordering)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commitment_submitted(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_cmit1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a bidder successfully reveals a pre-image via `reveal_pre_image`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_rvl1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_rvl1"
+/// - session_id: u64 - The session the reveal was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that revealed
+/// - index: u32 - The bidder's commitment index
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_pre_image_revealed(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_rvl1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a session is finalised via `finalise_commit_reveal_session`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_fin1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_fin1"
+/// - session_id: u64 - The finalised session id
+///
+/// **Payload** (non-indexed):
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - seed: BytesN<32> - The derived tie-break seed
+/// - reveal_count: u32 - Number of valid (non-forfeited) reveals folded into the seed
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_finalised(
+    env: &Env,
+    session_id: u64,
+    auction_id: u64,
+    seed: &BytesN<32>,
+    reveal_count: u32,
+) {
+    env.events().publish(
+        (symbol_short!("cr_fin1"), session_id),
+        (auction_id, seed.clone(), reveal_count),
+    );
+}

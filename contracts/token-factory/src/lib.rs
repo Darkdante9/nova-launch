@@ -16,6 +16,9 @@ mod ipfs_pinning;
 mod batch_operations;
 mod batch_scheduler;
 mod burn;
+mod commit_reveal;
+#[cfg(test)]
+mod commit_reveal_test;
 mod settlement;
 mod clawback;
 mod invariants;
@@ -4147,6 +4150,73 @@ impl TokenFactory {
         Ok(())
     }
 
+    // ── Commit-reveal auction tie-breaking (#1626) ───────────────────────
+
+    /// Create a commit-reveal session for front-running-resistant tie-breaking
+    /// (admin only). Emits `cr_open1`. See `commit_reveal.rs` for full docs.
+    pub fn create_commit_reveal_session(
+        env: Env,
+        admin: Address,
+        auction_id: u64,
+        commit_start: u64,
+        commit_end: u64,
+        reveal_end: u64,
+    ) -> Result<u64, Error> {
+        commit_reveal::create_commit_reveal_session(
+            &env,
+            &admin,
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
+        )
+    }
+
+    /// Submit a hashed commitment (`SHA256(pre_image)`) during the commit
+    /// window. Emits `cr_cmit1`. Returns the bidder's commitment index.
+    pub fn submit_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        commitment: BytesN<32>,
+    ) -> Result<u32, Error> {
+        commit_reveal::submit_commitment(&env, session_id, &bidder, commitment)
+    }
+
+    /// Reveal the pre-image committed to earlier, during the reveal window.
+    /// Emits `cr_rvl1`.
+    pub fn reveal_pre_image(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        pre_image: BytesN<32>,
+    ) -> Result<(), Error> {
+        commit_reveal::reveal_pre_image(&env, session_id, &bidder, pre_image)
+    }
+
+    /// Finalise a commit-reveal session, deriving the tie-break seed from the
+    /// hash-chain of all valid reveals in submission order. Callable by
+    /// anyone once the reveal window has closed. Emits `cr_fin1`.
+    pub fn finalise_commit_reveal_session(env: Env, session_id: u64) -> Result<BytesN<32>, Error> {
+        commit_reveal::finalise_session(&env, session_id)
+    }
+
+    /// Look up a commit-reveal session by id.
+    pub fn get_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Option<commit_reveal::CommitRevealSession> {
+        commit_reveal::get_session(&env, session_id)
+    }
+
+    /// Look up a bidder's commitment record within a session.
+    pub fn get_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+    ) -> Option<commit_reveal::CommitRecord> {
+        commit_reveal::get_commitment(&env, session_id, &bidder)
+    }
 }
 
 // Temporarily disabled - requires create_token implementation
