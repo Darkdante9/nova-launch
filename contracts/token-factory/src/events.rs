@@ -1339,6 +1339,42 @@ pub fn emit_campaign_cancelled(
         (cancelled_by, budget_remaining),
     );
 }
+
+/// Emit buyback step settled event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: bb_stp_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "bb_stp_v1"
+/// - campaign_id: u64 - The campaign identifier
+///
+/// **Payload** (non-indexed):
+/// - executor: Address   - Address that executed the step
+/// - spent: i128         - Budget spent on this step, in stroops
+/// - bought: i128        - Target tokens acquired by the swap
+/// - burned: i128        - Target tokens actually burned
+/// - step_number: u32    - 1-based index of this step within the campaign
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+///
+/// Emitted once per successful `execute_buyback_step` call, after the campaign
+/// record has been committed. `bought` and `burned` are reported separately so
+/// off-chain consumers can detect a burn shortfall without re-deriving it.
+pub fn emit_buyback_step_settled(
+    env: &Env,
+    campaign_id: u64,
+    executor: &Address,
+    spent: i128,
+    bought: i128,
+    burned: i128,
+    step_number: u32,
+) {
+    env.events().publish(
+        (symbol_short!("bb_stp_v1"), campaign_id),
+        (executor, spent, bought, burned, step_number),
+    );
+}
 /// Emit asset fractionalized event
 pub fn emit_asset_fractionalized(
     env: &Env,
