@@ -31,12 +31,16 @@ describe("streamMetadataService", () => {
   describe("getStreamMetadata", () => {
     it("looks up by streamId", async () => {
       const record = { streamId: 1n, creator: "G1" };
-      (prisma.paymentStreamMetadata.findUnique as any).mockResolvedValue(record);
+      (prisma.paymentStreamMetadata.findUnique as any).mockResolvedValue(
+        record
+      );
 
       const result = await getStreamMetadata(1n);
 
       expect(result).toBe(record);
-      expect(prisma.paymentStreamMetadata.findUnique).toHaveBeenCalledWith({ where: { streamId: 1n } });
+      expect(prisma.paymentStreamMetadata.findUnique).toHaveBeenCalledWith({
+        where: { streamId: 1n },
+      });
     });
   });
 
@@ -63,7 +67,12 @@ describe("streamMetadataService", () => {
   describe("upsertStreamMetadata", () => {
     it("creates a new record when none exists", async () => {
       (prisma.paymentStreamMetadata.findUnique as any).mockResolvedValue(null);
-      const created = { streamId: 1n, creator: "G1", recipient: "G2", title: "Grant" };
+      const created = {
+        streamId: 1n,
+        creator: "G1",
+        recipient: "G2",
+        title: "Grant",
+      };
       (prisma.paymentStreamMetadata.upsert as any).mockResolvedValue(created);
 
       const result = await upsertStreamMetadata({
@@ -76,7 +85,14 @@ describe("streamMetadataService", () => {
       expect(result).toBe(created);
       expect(prisma.paymentStreamMetadata.upsert).toHaveBeenCalledWith({
         where: { streamId: 1n },
-        create: { streamId: 1n, creator: "G1", recipient: "G2", title: "Grant", description: null, tags: [] },
+        create: {
+          streamId: 1n,
+          creator: "G1",
+          recipient: "G2",
+          title: "Grant",
+          description: null,
+          tags: [],
+        },
         update: { title: "Grant", description: null, tags: [] },
       });
     });
@@ -87,9 +103,17 @@ describe("streamMetadataService", () => {
         creator: "G1",
         recipient: "G2",
       });
-      (prisma.paymentStreamMetadata.upsert as any).mockResolvedValue({ streamId: 1n, title: "Updated" });
+      (prisma.paymentStreamMetadata.upsert as any).mockResolvedValue({
+        streamId: 1n,
+        title: "Updated",
+      });
 
-      await upsertStreamMetadata({ streamId: 1n, creator: "G1", recipient: "G2", title: "Updated" });
+      await upsertStreamMetadata({
+        streamId: 1n,
+        creator: "G1",
+        recipient: "G2",
+        title: "Updated",
+      });
 
       expect(prisma.paymentStreamMetadata.upsert).toHaveBeenCalled();
     });
@@ -102,7 +126,11 @@ describe("streamMetadataService", () => {
       });
 
       await expect(
-        upsertStreamMetadata({ streamId: 1n, creator: "ATTACKER", recipient: "G2" })
+        upsertStreamMetadata({
+          streamId: 1n,
+          creator: "ATTACKER",
+          recipient: "G2",
+        })
       ).rejects.toThrow(StreamMetadataAuthError);
       expect(prisma.paymentStreamMetadata.upsert).not.toHaveBeenCalled();
     });

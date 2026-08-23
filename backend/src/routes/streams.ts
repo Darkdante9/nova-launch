@@ -37,7 +37,9 @@ function parseStreamId(raw: string): bigint | null {
 function serialize(record: PaymentStreamMetadataDto): Record<string, unknown> {
   return { ...record, streamId: record.streamId.toString() };
 }
-function serializeAll(records: PaymentStreamMetadataDto[]): Record<string, unknown>[] {
+function serializeAll(
+  records: PaymentStreamMetadataDto[]
+): Record<string, unknown>[] {
   return records.map(serialize);
 }
 
@@ -58,7 +60,9 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
   if (streamId === null) {
     return res
       .status(400)
-      .json(errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" }));
+      .json(
+        errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
+      );
   }
 
   try {
@@ -66,9 +70,12 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
     res.json(successResponse(metadata ? serialize(metadata) : null));
   } catch (error) {
     console.error("[streams] GET /:streamId/metadata error:", error);
-    res
-      .status(500)
-      .json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch stream metadata" }));
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch stream metadata",
+      })
+    );
   }
 });
 
@@ -84,7 +91,9 @@ router.put("/:streamId/metadata", async (req: Request, res: Response) => {
   if (streamId === null) {
     return res
       .status(400)
-      .json(errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" }));
+      .json(
+        errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
+      );
   }
 
   const parsed = upsertMetadataSchema.safeParse(req.body);
@@ -108,9 +117,12 @@ router.put("/:streamId/metadata", async (req: Request, res: Response) => {
         .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
     }
     console.error("[streams] PUT /:streamId/metadata error:", error);
-    res
-      .status(500)
-      .json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to update stream metadata" }));
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to update stream metadata",
+      })
+    );
   }
 });
 
@@ -124,9 +136,12 @@ router.get("/creator/:address", async (req: Request, res: Response) => {
     res.json(successResponse(serializeAll(streams)));
   } catch (error) {
     console.error("[streams] GET /creator/:address error:", error);
-    res
-      .status(500)
-      .json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch creator streams" }));
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch creator streams",
+      })
+    );
   }
 });
 
@@ -140,9 +155,12 @@ router.get("/recipient/:address", async (req: Request, res: Response) => {
     res.json(successResponse(serializeAll(streams)));
   } catch (error) {
     console.error("[streams] GET /recipient/:address error:", error);
-    res
-      .status(500)
-      .json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch recipient streams" }));
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch recipient streams",
+      })
+    );
   }
 });
 

@@ -51,7 +51,12 @@ describe("streams route", () => {
     });
 
     it("returns metadata when found", async () => {
-      const record = { streamId: "1", creator: "GCREATOR", recipient: "GRECIPIENT", title: "Grant" };
+      const record = {
+        streamId: "1",
+        creator: "GCREATOR",
+        recipient: "GRECIPIENT",
+        title: "Grant",
+      };
       (getStreamMetadata as any).mockResolvedValue(record);
 
       const res = await request(app).get("/api/streams/1/metadata");
@@ -93,7 +98,12 @@ describe("streams route", () => {
     });
 
     it("creates/updates metadata and returns it", async () => {
-      const record = { streamId: "1", creator: "G1", recipient: "G2", title: "Payroll" };
+      const record = {
+        streamId: "1",
+        creator: "G1",
+        recipient: "G2",
+        title: "Payroll",
+      };
       (upsertStreamMetadata as any).mockResolvedValue(record);
 
       const res = await request(app)
@@ -111,7 +121,9 @@ describe("streams route", () => {
     });
 
     it("returns 403 when a non-creator attempts to update", async () => {
-      (upsertStreamMetadata as any).mockRejectedValue(new StreamMetadataAuthError());
+      (upsertStreamMetadata as any).mockRejectedValue(
+        new StreamMetadataAuthError()
+      );
 
       const res = await request(app)
         .put("/api/streams/1/metadata")
@@ -124,7 +136,11 @@ describe("streams route", () => {
     it("rejects a tags array over the max length", async () => {
       const res = await request(app)
         .put("/api/streams/1/metadata")
-        .send({ creator: "G1", recipient: "G2", tags: Array.from({ length: 21 }, (_, i) => `tag${i}`) });
+        .send({
+          creator: "G1",
+          recipient: "G2",
+          tags: Array.from({ length: 21 }, (_, i) => `tag${i}`),
+        });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
     });
