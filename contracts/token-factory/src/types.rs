@@ -791,6 +791,35 @@ pub struct AmmPool {
     pub total_lp: i128,
 }
 
+/// A record of tokens escrowed by `lock_tokens` for a cross-chain bridge
+/// transfer, keyed by the contract-assigned `nonce`.
+///
+/// The nonce must be supplied verbatim to `release_tokens` (on the
+/// destination-side deployment of this contract) to authorize release; the
+/// lock record itself is not consulted by `release_tokens` — verifying that
+/// a matching lock actually occurred on the source chain is an off-chain /
+/// admin responsibility (see `bridge.rs` module docs).
+///
+/// # Fields
+/// * `nonce` - Monotonically-assigned, single-use identifier for this lock
+/// * `sender` - Address that authorized and funded the lock
+/// * `token` - Token contract address that was locked
+/// * `amount` - Amount of `token` escrowed (smallest unit)
+/// * `destination_chain` - Free-form identifier of the target chain (e.g. "ethereum")
+/// * `destination_address` - Raw destination-chain address bytes (format is chain-specific)
+/// * `locked_at` - Ledger timestamp when the lock was created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeLock {
+    pub nonce: u64,
+    pub sender: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub destination_chain: String,
+    pub destination_address: Bytes,
+    pub locked_at: u64,
+}
+
 /// Storage keys for contract data
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -962,6 +991,16 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
+    // ── Cross-chain bridge (lock/release primitive) ─────────────────────────
+    /// Monotonic nonce counter; the next value handed out by `lock_tokens`.
+    BridgeNextNonce,
+    /// Lock record for a bridge lock, keyed by its assigned nonce.
+    BridgeLock(u64),
+    /// Whether `nonce` has already been consumed by `release_tokens`.
+    BridgeReleased(u64),
+    /// Cumulative amount of `token` ever locked via `lock_tokens` (audit/query
+    /// total — like `TotalBurned`, this never decreases on release).
+    BridgeLockedTotal(Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1310,6 +1349,12 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
+    // Cross-chain bridge errors
+    /// `release_tokens` was called with a nonce that has already been released.
+    pub const BridgeNonceAlreadyReleased: Self = Self(133);
+    /// `lock_tokens` was called with an empty or oversized destination chain
+    /// identifier / destination address.
+    pub const InvalidBridgeDestination: Self = Self(134);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1333,6 +1378,8 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
+            133 => "BridgeNonceAlreadyReleased",
+            134 => "InvalidBridgeDestination",
             _ => "UnknownError",
         }
     }

@@ -1894,3 +1894,75 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
     env.events()
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
+
+// ── Cross-chain bridge events (lock/release primitive) ──────────────────────
+
+/// Emitted when tokens are escrowed by `lock_tokens` on the source-chain
+/// deployment of this contract. Conceptually the "bridge/initiated" event
+/// from the issue's design; abbreviated to fit the 9-character
+/// `symbol_short!` limit.
+///
+/// **Schema Version**: 1
+/// **Event Name**: brg_lck1
+///
+/// **Topics** (indexed):
+/// - Event name: "brg_lck1"
+/// - nonce: u64 - The monotonically-assigned, single-use nonce for this lock
+///
+/// **Payload** (non-indexed):
+/// - sender: Address - The address that authorized and funded the lock
+/// - token: Address - The token contract address that was locked
+/// - amount: i128 - The amount locked (smallest unit)
+/// - destination_chain: String - Free-form identifier of the target chain
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_bridge_lock(
+    env: &Env,
+    nonce: u64,
+    sender: &Address,
+    token: &Address,
+    amount: i128,
+    destination_chain: &String,
+) {
+    env.events().publish(
+        (symbol_short!("brg_lck1"), nonce),
+        (
+            sender.clone(),
+            token.clone(),
+            amount,
+            destination_chain.clone(),
+        ),
+    );
+}
+
+/// Emitted when tokens are released by `release_tokens` on the
+/// destination-chain deployment of this contract. Conceptually the
+/// "bridge/completed" event from the issue's design.
+///
+/// **Schema Version**: 1
+/// **Event Name**: brg_rel1
+///
+/// **Topics** (indexed):
+/// - Event name: "brg_rel1"
+/// - nonce: u64 - The nonce supplied verbatim from the source-chain lock
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who authorized the release
+/// - token: Address - The token contract address released
+/// - recipient: Address - The address that received the released tokens
+/// - amount: i128 - The amount released (smallest unit)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_bridge_release(
+    env: &Env,
+    nonce: u64,
+    admin: &Address,
+    token: &Address,
+    recipient: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("brg_rel1"), nonce),
+        (admin.clone(), token.clone(), recipient.clone(), amount),
+    );
+}
