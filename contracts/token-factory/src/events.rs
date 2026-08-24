@@ -916,6 +916,53 @@ pub fn emit_stream_metadata_updated(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Recurring Stream Events (Issue #1765)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Emit recurring stream created event.
+///
+/// Topics: ("rstrm_cr", recurring_stream_id). Payload: (creator, recipient,
+/// amount_per_period, first_child_stream_id).
+pub fn emit_recurring_stream_created(
+    env: &Env,
+    recurring_stream_id: u64,
+    creator: &Address,
+    recipient: &Address,
+    amount_per_period: i128,
+    first_child_stream_id: u64,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_cr"), recurring_stream_id),
+        (creator, recipient, amount_per_period, first_child_stream_id),
+    );
+}
+
+/// Emit recurring stream period-triggered event (a new child stream was created).
+///
+/// Topics: ("rstrm_trg", recurring_stream_id). Payload: (child_stream_id, period_index).
+pub fn emit_recurring_period_triggered(
+    env: &Env,
+    recurring_stream_id: u64,
+    child_stream_id: u64,
+    period_index: u32,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_trg"), recurring_stream_id),
+        (child_stream_id, period_index),
+    );
+}
+
+/// Emit recurring stream cancelled event.
+///
+/// Topics: ("rstrm_cxl", recurring_stream_id). Payload: (canceller,).
+pub fn emit_recurring_stream_cancelled(env: &Env, recurring_stream_id: u64, canceller: &Address) {
+    env.events().publish(
+        (symbol_short!("rstrm_cxl"), recurring_stream_id),
+        (canceller.clone(),),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Proposal/Governance Events
 // ═══════════════════════════════════════════════════════════════════════
 

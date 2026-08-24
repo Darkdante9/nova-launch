@@ -989,13 +989,13 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
-    // ── Oracle price feed ─────────────────────────────────────────────────
-    /// Global oracle configuration (max staleness window).
-    OracleConfig,
-    /// Whether `source` is authorized to submit oracle prices.
-    OracleAuthorizedSource(Address),
-    /// Latest price observation submitted for `asset`.
-    OraclePrice(Address),
+    // ── Recurring payment streams (Issue #1765) ──
+    /// Recurring stream record, keyed by recurring_stream_id
+    RecurringStream(u64),
+    /// Total number of recurring streams created
+    RecurringStreamCount,
+    /// Keyset index of recurring-stream ids created by an address
+    CreatorRecurringStreams(Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1344,13 +1344,32 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
-    // Oracle price feed errors
-    pub const OracleUnauthorizedSource: Self = Self(133);
-    pub const OraclePriceStale: Self = Self(134);
-    pub const OracleInvalidPrice: Self = Self(135);
-    pub const OraclePriceNotFound: Self = Self(136);
-    pub const OracleInvalidConfig: Self = Self(137);
-    pub const OracleNotConfigured: Self = Self(138);
+    // ── Payment streaming / vesting errors (Issue #1765) ──
+    // Folded into the main Error enum rather than a dedicated
+    // `#[contracterror]` enum: every other feature module in this contract
+    // (vault, burn, governance, ...) shares this single enum, and streaming
+    // reuses several of its existing codes (Unauthorized, InvalidAmount,
+    // ArithmeticError, NothingToClaim, CliffNotReached, TokenNotFound,
+    // ContractPaused, BatchTooLarge) — a separate enum would fragment error
+    // handling across two types for no benefit.
+    // Note: `StreamNotFound` (17) and `StreamCancelled` (19) already exist
+    // above and are reused directly rather than duplicated here.
+    /// `start_time`/`cliff_time`/`end_time` ordering is invalid.
+    pub const InvalidStreamSchedule: Self = Self(135);
+    /// Metadata can no longer be changed — the stream has already had a claim.
+    pub const StreamMetadataLocked: Self = Self(136);
+    /// Milestone index does not exist on this stream.
+    pub const MilestoneNotFound: Self = Self(137);
+    /// Caller is not the milestone's designated oracle address.
+    pub const UnauthorizedMilestoneOracle: Self = Self(138);
+    /// Recurring stream with the given id does not exist.
+    pub const RecurringStreamNotFound: Self = Self(139);
+    /// Recurring stream is cancelled and can no longer create child streams.
+    pub const RecurringStreamCancelled: Self = Self(140);
+    /// The current period has not yet elapsed — too early to create the next child stream.
+    pub const RecurringPeriodNotElapsed: Self = Self(141);
+    /// Recurring stream has reached its bounded period or tracked-child-stream limit.
+    pub const RecurringStreamLimitReached: Self = Self(142);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1374,12 +1393,16 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
-            133 => "OracleUnauthorizedSource",
-            134 => "OraclePriceStale",
-            135 => "OracleInvalidPrice",
-            136 => "OraclePriceNotFound",
-            137 => "OracleInvalidConfig",
-            138 => "OracleNotConfigured",
+            17 => "StreamNotFound",
+            19 => "StreamCancelled",
+            135 => "InvalidStreamSchedule",
+            136 => "StreamMetadataLocked",
+            137 => "MilestoneNotFound",
+            138 => "UnauthorizedMilestoneOracle",
+            139 => "RecurringStreamNotFound",
+            140 => "RecurringStreamCancelled",
+            141 => "RecurringPeriodNotElapsed",
+            142 => "RecurringStreamLimitReached",
             _ => "UnknownError",
         }
     }
@@ -1584,7 +1607,7 @@ pub struct PaginatedTokens {
 /// * `created_ledger` - Ledger sequence number when the stream was created
 /// * `stream_id` - Unique stream identifier (tiebreaker for same-ledger creates)
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamCursor {
     pub created_ledger: u32,
     pub stream_id: u64,
@@ -1601,13 +1624,19 @@ impl StreamCursor {
 ///
 /// # Fields
 /// * `streams` - Page of streams ordered by `(created_ledger, stream_id)` ascending
-/// * `next_cursor` - Cursor to pass to the next call (`None` when this is the last page)
+/// * `next_cursor` - Cursor to pass to the next call; only meaningful when `has_more` is `true`
 /// * `has_more` - Whether additional streams exist beyond this page
+///
+/// `next_cursor` is a plain `StreamCursor` rather than `Option<StreamCursor>`
+/// because `Option<T>` of a custom `#[contracttype]` is not marshalled
+/// correctly by this soroban-sdk version's generated contract client when
+/// nested inside another `#[contracttype]` struct — check `has_more` rather
+/// than relying on an absent cursor.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaginatedStreamsResponse {
     pub streams: soroban_sdk::Vec<StreamInfo>,
-    pub next_cursor: Option<StreamCursor>,
+    pub next_cursor: StreamCursor,
     pub has_more: bool,
 }
 

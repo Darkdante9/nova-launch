@@ -14,6 +14,7 @@ import statsRoutes from "./routes/stats";
 import governanceRoutes from "./routes/governance";
 import errorRoutes from "./routes/errors";
 import vaultRoutes from "./routes/vaults";
+import streamsRoutes from "./routes/streams";
 import versionRoutes from "./routes/version";
 import searchRoutes from "./routes/search";
 import exportRoutes from "./routes/export";
@@ -109,6 +110,7 @@ v1Router.use("/stats", limiter, statsRoutes);
 v1Router.use("/governance", limiter, governanceRoutes);
 v1Router.use("/errors", limiter, errorRoutes);
 v1Router.use("/vaults", limiter, vaultRoutes);
+v1Router.use("/streams", limiter, streamsRoutes);
 v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
@@ -241,7 +243,11 @@ const server = app.listen(PORT, async () => {
     const reconciliationInterval = parseInt(
       process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000" // 5 minutes default
     );
-    jobQueue.scheduleRecurring("stream_reconciliation", {}, reconciliationInterval);
+    jobQueue.scheduleRecurring(
+      "stream_reconciliation",
+      {},
+      reconciliationInterval
+    );
     console.log(
       `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
     );
