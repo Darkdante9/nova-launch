@@ -916,6 +916,53 @@ pub fn emit_stream_metadata_updated(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Recurring Stream Events (Issue #1765)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Emit recurring stream created event.
+///
+/// Topics: ("rstrm_cr", recurring_stream_id). Payload: (creator, recipient,
+/// amount_per_period, first_child_stream_id).
+pub fn emit_recurring_stream_created(
+    env: &Env,
+    recurring_stream_id: u64,
+    creator: &Address,
+    recipient: &Address,
+    amount_per_period: i128,
+    first_child_stream_id: u64,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_cr"), recurring_stream_id),
+        (creator, recipient, amount_per_period, first_child_stream_id),
+    );
+}
+
+/// Emit recurring stream period-triggered event (a new child stream was created).
+///
+/// Topics: ("rstrm_trg", recurring_stream_id). Payload: (child_stream_id, period_index).
+pub fn emit_recurring_period_triggered(
+    env: &Env,
+    recurring_stream_id: u64,
+    child_stream_id: u64,
+    period_index: u32,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_trg"), recurring_stream_id),
+        (child_stream_id, period_index),
+    );
+}
+
+/// Emit recurring stream cancelled event.
+///
+/// Topics: ("rstrm_cxl", recurring_stream_id). Payload: (canceller,).
+pub fn emit_recurring_stream_cancelled(env: &Env, recurring_stream_id: u64, canceller: &Address) {
+    env.events().publish(
+        (symbol_short!("rstrm_cxl"), recurring_stream_id),
+        (canceller.clone(),),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Proposal/Governance Events
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1929,4 +1976,61 @@ pub fn emit_settlement_aborted(env: &Env, reservation_id: u64, proposal_id: u64,
 pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_id: u64) {
     env.events()
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
+}
+
+// ── Oracle price feed events ────────────────────────────────────────────────
+
+/// Emitted when the admin (re)configures the oracle's max staleness window.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_cfg1
+pub fn emit_oracle_configured(env: &Env, admin: &Address, max_age_seconds: u64) {
+    env.events().publish(
+        (symbol_short!("orc_cfg1"),),
+        (admin.clone(), max_age_seconds),
+    );
+}
+
+/// Emitted when the admin authorizes or deauthorizes an oracle price source.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_src1
+pub fn emit_oracle_source_authorized(
+    env: &Env,
+    admin: &Address,
+    source: &Address,
+    authorized: bool,
+) {
+    env.events().publish(
+        (symbol_short!("orc_src1"),),
+        (admin.clone(), source.clone(), authorized),
+    );
+}
+
+/// Emitted when an authorized source submits a new price for `asset`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_pr1
+///
+/// **Topics** (indexed):
+/// - Event name: "orc_pr1"
+/// - asset: Address - The asset the price was submitted for
+///
+/// **Payload** (non-indexed):
+/// - source: Address - The authorized source that submitted the price
+/// - price: i128 - The raw submitted price
+/// - decimals: u32 - Decimal places in `price`
+/// - timestamp: u64 - Ledger timestamp the price was recorded at
+pub fn emit_price_submitted(
+    env: &Env,
+    asset: &Address,
+    source: &Address,
+    price: i128,
+    decimals: u32,
+    timestamp: u64,
+) {
+    env.events().publish(
+        (symbol_short!("orc_pr1"), asset.clone()),
+        (source.clone(), price, decimals, timestamp),
+    );
 }

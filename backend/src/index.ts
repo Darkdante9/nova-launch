@@ -243,7 +243,11 @@ const server = app.listen(PORT, async () => {
     const reconciliationInterval = parseInt(
       process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000" // 5 minutes default
     );
-    jobQueue.scheduleRecurring("stream_reconciliation", {}, reconciliationInterval);
+    jobQueue.scheduleRecurring(
+      "stream_reconciliation",
+      {},
+      reconciliationInterval
+    );
     console.log(
       `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
     );
