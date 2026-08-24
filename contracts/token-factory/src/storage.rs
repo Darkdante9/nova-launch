@@ -2210,6 +2210,77 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
+// ── Fractionalization storage functions ─────────────────────────────
+
+/// Get a fractionalization vault record by its vault id.
+pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalVault(vault_id))
+}
+
+/// Persist a fractionalization vault record, keyed by its vault id.
+pub fn set_fractional_vault(env: &Env, vault: &crate::types::FractionalVault) {
+    let key = DataKey::FractionalVault(vault.id);
+    env.storage().persistent().set(&key, vault);
+    bump_persistent(env, &key);
+}
+
+/// Increment and return the next fractionalization vault id (starts at 1).
+pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
+    let count = env
+        .storage()
+        .instance()
+        .get(&DataKey::FractionalVaultCount)
+        .unwrap_or(0_u64);
+    let next = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::FractionalVaultCount, &next);
+    Ok(next)
+}
+
+/// Look up the vault id for a locked asset's identity, if it has ever been fractionalized.
+pub fn get_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AssetFractionalizationIndex(
+            asset_contract.clone(),
+            asset_id.clone(),
+        ))
+}
+
+/// Record which vault id a locked asset's identity maps to.
+pub fn set_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+    vault_id: u64,
+) {
+    let key = DataKey::AssetFractionalizationIndex(asset_contract.clone(), asset_id.clone());
+    env.storage().persistent().set(&key, &vault_id);
+    bump_persistent(env, &key);
+}
+
+/// Get a holder's outstanding fractional share balance for a vault.
+pub fn get_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalShareBalance(vault_id, holder.clone()))
+        .unwrap_or(0)
+}
+
+/// Set a holder's outstanding fractional share balance for a vault.
+pub fn set_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address, balance: i128) {
+    let key = DataKey::FractionalShareBalance(vault_id, holder.clone());
+    env.storage().persistent().set(&key, &balance);
+    bump_persistent(env, &key);
+}
+
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
 //
 // Each test calls a getter *before* `initialize()` has been invoked and

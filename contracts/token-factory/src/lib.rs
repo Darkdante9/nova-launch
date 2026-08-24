@@ -9,6 +9,9 @@ extern crate std;
 
 mod compliance_reporting;
 mod freeze_functions;
+mod fractionalization;
+#[cfg(test)]
+mod fractionalization_test;
 mod governance;
 mod game_history;
 mod ipfs_pinning;
@@ -162,9 +165,9 @@ mod vault_balance_invariant_proptest;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
-    PreflightItemResult, Reservation, StreamInfo, StreamPage, StreamParams, TokenCreationParams,
-    TokenInfo, TokenStats, Vault, VaultStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, FractionalVault,
+    FractionalizationParams, PaginationCursor, PreflightItemResult, Reservation, StreamInfo,
+    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -4147,6 +4150,52 @@ impl TokenFactory {
         Ok(())
     }
 
+    // ── Fractionalization entry points ──────────────────────────────────
+
+    /// Lock a unique asset (identified by `params.asset_contract` +
+    /// `params.asset_id`) and mint `params.total_supply` fractional
+    /// ownership shares. `owner` must hold and authorize transfer of the
+    /// asset. Returns the id of the newly created fractionalization vault.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::InvalidTokenParams` - Shares token name/symbol are invalid
+    /// * `Error::InvalidAmount` - `total_supply` is zero or negative
+    /// * `Error::AssetAlreadyFractionalized` - This asset already has an active vault
+    pub fn fractionalize(
+        env: Env,
+        owner: Address,
+        params: FractionalizationParams,
+    ) -> Result<u64, Error> {
+        fractionalization::fractionalize(&env, owner, params)
+    }
+
+    /// Redeem (unlock) a fractionalized asset. `caller` must hold and burn
+    /// 100% of the vault's outstanding shares; the locked asset is then
+    /// released back to `caller`.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::FractionalVaultNotFound` - No active fractional vault exists for `vault_id`
+    /// * `Error::InsufficientShares` - Caller does not hold 100% of the outstanding shares
+    pub fn redeem_fractional_asset(env: Env, caller: Address, vault_id: u64) -> Result<(), Error> {
+        fractionalization::redeem(&env, caller, vault_id)
+    }
+
+    /// Return the fractionalization vault record for `vault_id`, if any.
+    pub fn get_fractional_vault(env: Env, vault_id: u64) -> Option<FractionalVault> {
+        storage::get_fractional_vault(&env, vault_id)
+    }
+
+    /// Returns `true` if `vault_id` is currently locked in an active fractionalization vault.
+    pub fn is_asset_fractionalized(env: Env, vault_id: u64) -> bool {
+        fractionalization::is_fractionalized(&env, vault_id)
+    }
+
+    /// Return a holder's outstanding fractional share balance for `vault_id`.
+    pub fn get_fractional_share_balance(env: Env, vault_id: u64, holder: Address) -> i128 {
+        storage::get_fractional_share_balance(&env, vault_id, &holder)
+    }
 }
 
 // Temporarily disabled - requires create_token implementation
