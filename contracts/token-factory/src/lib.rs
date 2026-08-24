@@ -36,6 +36,7 @@ mod proposal_type_queue;
 #[cfg(test)]
 mod proposal_execution_queue_fifo_test;
 mod proposal_state_machine;
+mod staking;
 mod storage;
 mod storage_migration;
 #[cfg(test)]
@@ -48,6 +49,8 @@ mod game_history_test;
 mod proposal_queue_test;
 #[cfg(test)]
 mod event_versions_test;
+#[cfg(test)]
+mod staking_integration_test;
 mod timelock;
 mod token_creation;
 mod treasury;
@@ -163,8 +166,8 @@ use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, 
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
     ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
-    PreflightItemResult, Reservation, StreamInfo, StreamPage, StreamParams, TokenCreationParams,
-    TokenInfo, TokenStats, Vault, VaultStatus,
+    PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo, StreamPage,
+    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -4145,6 +4148,57 @@ impl TokenFactory {
         events::emit_multisig_executed(env, proposal.id, executor);
 
         Ok(())
+    }
+
+    // ── Staking (#1757) ─────────────────────────────────────────────────
+
+    /// Create a staking pool paying `reward_rate` units of the reward token
+    /// per second to stakers, proportional to their share of the pool.
+    /// Caller must be the factory admin or the creator of `token_index`.
+    pub fn create_staking_pool(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        reward_token_index: u32,
+        reward_rate: i128,
+    ) -> Result<u64, Error> {
+        staking::create_staking_pool(&env, creator, token_index, reward_token_index, reward_rate)
+    }
+
+    /// Stake `amount` of a pool's staking token, settling any pending
+    /// reward first.
+    pub fn stake(env: Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
+        staking::stake(&env, caller, pool_id, amount)
+    }
+
+    /// Unstake `amount` of a pool's staking token, settling any pending
+    /// reward first.
+    pub fn unstake(env: Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
+        staking::unstake(&env, caller, pool_id, amount)
+    }
+
+    /// Pay out a staker's currently accrued reward without unstaking.
+    pub fn claim_rewards(env: Env, caller: Address, pool_id: u64) -> Result<(), Error> {
+        staking::claim_rewards(&env, caller, pool_id)
+    }
+
+    /// Query a staking pool's current state.
+    pub fn get_staking_pool(env: Env, pool_id: u64) -> Result<StakingPool, Error> {
+        storage::get_staking_pool(&env, pool_id).ok_or(Error::StakingPoolNotFound)
+    }
+
+    /// Query a user's stake within a pool (zeroed if the user never staked).
+    pub fn get_user_stake(env: Env, pool_id: u64, user: Address) -> StakeInfo {
+        storage::get_user_stake(&env, pool_id, &user).unwrap_or(StakeInfo {
+            amount: 0,
+            reward_debt: 0,
+        })
+    }
+
+    /// Preview a staker's currently accrued (unclaimed) reward without
+    /// mutating any state.
+    pub fn pending_rewards(env: Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
+        staking::pending_rewards(&env, caller, pool_id)
     }
 
 }

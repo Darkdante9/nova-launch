@@ -962,6 +962,15 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
+    // ── Staking (#1757) ──
+    /// Staking pool configuration and state, keyed by pool_id
+    StakingPool(u64),
+    /// Total number of staking pools created
+    StakingPoolCount,
+    /// Next available staking pool ID
+    NextStakingPoolId,
+    /// A user's stake within a pool: (pool_id, staker) → StakeInfo
+    UserStake(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1310,6 +1319,11 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
+    // Staking errors (#1757)
+    pub const StakingPoolNotFound: Self = Self(133);
+    pub const StakingNotActive: Self = Self(134);
+    pub const InvalidRewardRate: Self = Self(135);
+    pub const InsufficientStake: Self = Self(136);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1333,6 +1347,10 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
+            133 => "StakingPoolNotFound",
+            134 => "StakingNotActive",
+            135 => "InvalidRewardRate",
+            136 => "InsufficientStake",
             _ => "UnknownError",
         }
     }

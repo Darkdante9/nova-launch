@@ -1894,3 +1894,49 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
     env.events()
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
+
+// ── Staking (#1757) ──────────────────────────────────────────────────────
+
+/// Emitted when a new staking pool is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_crt1
+pub fn emit_staking_pool_created(
+    env: &Env,
+    pool_id: u64,
+    token_index: u32,
+    reward_token_index: u32,
+    reward_rate: i128,
+) {
+    env.events().publish(
+        (symbol_short!("stk_crt1"), pool_id),
+        (token_index, reward_token_index, reward_rate),
+    );
+}
+
+/// Emitted when a user stakes into a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_dep1
+pub fn emit_staked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_dep1"), pool_id), (user.clone(), amount));
+}
+
+/// Emitted when a user unstakes from a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_wd1
+pub fn emit_unstaked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_wd1"), pool_id), (user.clone(), amount));
+}
+
+/// Emitted when a user claims accrued staking rewards.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_clm1
+pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
+}

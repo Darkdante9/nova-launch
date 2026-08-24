@@ -2210,6 +2210,77 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Staking storage (#1757)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Get a staking pool by ID.
+pub fn get_staking_pool(env: &Env, pool_id: u64) -> Option<crate::types::StakingPool> {
+    env.storage().persistent().get(&DataKey::StakingPool(pool_id))
+}
+
+/// Save a staking pool.
+pub fn set_staking_pool(env: &Env, pool_id: u64, pool: &crate::types::StakingPool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::StakingPool(pool_id), pool);
+}
+
+/// Allocate and return the next staking pool ID.
+pub fn increment_next_staking_pool_id(env: &Env) -> u64 {
+    let current = env
+        .storage()
+        .instance()
+        .get(&DataKey::NextStakingPoolId)
+        .unwrap_or(0u64);
+    env.storage()
+        .instance()
+        .set(&DataKey::NextStakingPoolId, &(current + 1));
+    current
+}
+
+/// Get the total number of staking pools created.
+pub fn get_staking_pool_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::StakingPoolCount)
+        .unwrap_or(0)
+}
+
+/// Increment and persist the staking pool counter.
+pub fn increment_staking_pool_count(env: &Env) -> Result<u64, Error> {
+    let count = get_staking_pool_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::StakingPoolCount, &count);
+    Ok(count)
+}
+
+/// Get a user's stake within a pool.
+pub fn get_user_stake(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+) -> Option<crate::types::StakeInfo> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserStake(pool_id, user.clone()))
+}
+
+/// Save a user's stake within a pool.
+pub fn set_user_stake(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+    stake: &crate::types::StakeInfo,
+) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserStake(pool_id, user.clone()), stake);
+}
+
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
 //
 // Each test calls a getter *before* `initialize()` has been invoked and
