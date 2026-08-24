@@ -15,6 +15,9 @@ mod ipfs_pinning;
 
 mod batch_operations;
 mod batch_scheduler;
+mod bridge;
+#[cfg(test)]
+mod bridge_test;
 mod burn;
 mod settlement;
 mod clawback;
@@ -164,7 +167,7 @@ mod vault_balance_invariant_proptest;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
-    AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
+    AuctionStatus, BatchScheduleResult, BridgeLock, BurnAuction, BuybackCampaign, CampaignStatus,
     ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
     PreflightItemResult, Reservation, StreamInfo, StreamPage, StreamParams, TokenCreationParams,
     TokenInfo, TokenStats, Vault, VaultStatus,

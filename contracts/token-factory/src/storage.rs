@@ -1,8 +1,8 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{
-    BuybackCampaign, DataKey, Error, FactoryState, Reservation, RevealBatchContinuation,
-    SettleBatchContinuation, StreamCursor, TokenInfo,
+    BridgeLock, BuybackCampaign, DataKey, Error, FactoryState, Reservation,
+    RevealBatchContinuation, SettleBatchContinuation, StreamCursor, TokenInfo,
 };
 
 // ============================================================
