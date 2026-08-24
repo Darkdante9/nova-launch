@@ -352,6 +352,11 @@ pub struct BuybackCampaign {
     pub budget: i128,
     pub spent: i128,
     pub tokens_bought: i128,
+    /// Tokens actually burned so far. Tracked separately from `tokens_bought`
+    /// so a burn that under-delivers is visible rather than silently absorbed.
+    pub tokens_burned: i128,
+    /// Hard cap on the quote amount a single `execute_buyback_step` may spend.
+    pub max_spend_per_step: i128,
     pub execution_count: u32,
     pub start_time: u64,
     pub end_time: u64,
@@ -1344,32 +1349,17 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
-    // ── Payment streaming / vesting errors (Issue #1765) ──
-    // Folded into the main Error enum rather than a dedicated
-    // `#[contracterror]` enum: every other feature module in this contract
-    // (vault, burn, governance, ...) shares this single enum, and streaming
-    // reuses several of its existing codes (Unauthorized, InvalidAmount,
-    // ArithmeticError, NothingToClaim, CliffNotReached, TokenNotFound,
-    // ContractPaused, BatchTooLarge) — a separate enum would fragment error
-    // handling across two types for no benefit.
-    // Note: `StreamNotFound` (17) and `StreamCancelled` (19) already exist
-    // above and are reused directly rather than duplicated here.
-    /// `start_time`/`cliff_time`/`end_time` ordering is invalid.
-    pub const InvalidStreamSchedule: Self = Self(135);
-    /// Metadata can no longer be changed — the stream has already had a claim.
-    pub const StreamMetadataLocked: Self = Self(136);
-    /// Milestone index does not exist on this stream.
-    pub const MilestoneNotFound: Self = Self(137);
-    /// Caller is not the milestone's designated oracle address.
-    pub const UnauthorizedMilestoneOracle: Self = Self(138);
-    /// Recurring stream with the given id does not exist.
-    pub const RecurringStreamNotFound: Self = Self(139);
-    /// Recurring stream is cancelled and can no longer create child streams.
-    pub const RecurringStreamCancelled: Self = Self(140);
-    /// The current period has not yet elapsed — too early to create the next child stream.
-    pub const RecurringPeriodNotElapsed: Self = Self(141);
-    /// Recurring stream has reached its bounded period or tracked-child-stream limit.
-    pub const RecurringStreamLimitReached: Self = Self(142);
+    // Buyback-and-burn campaign step-execution errors (issue #1764)
+    /// Step execution attempted on a campaign that is not in the Active state.
+    pub const CampaignInactive: Self = Self(133);
+    /// Requested step spend exceeds the campaign's `max_spend_per_step` cap.
+    pub const ExceedsStepLimit: Self = Self(134);
+    /// Swap returned fewer tokens than the slippage tolerance allows.
+    pub const SlippageExceeded: Self = Self(135);
+    /// Realized burn did not match the expected burn amount.
+    pub const ReconciliationFailed: Self = Self(136);
+    /// A monotonic campaign accounting invariant would be violated.
+    pub const InvariantViolation: Self = Self(137);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1393,16 +1383,11 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
-            17 => "StreamNotFound",
-            19 => "StreamCancelled",
-            135 => "InvalidStreamSchedule",
-            136 => "StreamMetadataLocked",
-            137 => "MilestoneNotFound",
-            138 => "UnauthorizedMilestoneOracle",
-            139 => "RecurringStreamNotFound",
-            140 => "RecurringStreamCancelled",
-            141 => "RecurringPeriodNotElapsed",
-            142 => "RecurringStreamLimitReached",
+            133 => "CampaignInactive",
+            134 => "ExceedsStepLimit",
+            135 => "SlippageExceeded",
+            136 => "ReconciliationFailed",
+            137 => "InvariantViolation",
             _ => "UnknownError",
         }
     }
@@ -1431,12 +1416,18 @@ impl From<soroban_sdk::Error> for Error {
     }
 }
 
-// Buyback error code mapping (reusing existing errors):
-// - CampaignNotFound -> TokenNotFound (4)
-// - CampaignInactive -> ContractPaused (14)  
-// - BudgetExhausted -> InsufficientFee (1)
-// - SlippageExceeded -> InvalidAmount (10)
-// - InvalidBuybackParams -> InvalidParameters (3)
+// Buyback-and-burn campaign error codes (issue #1764).
+// These are dedicated discriminants -- earlier revisions reused unrelated
+// codes (e.g. ContractPaused for an inactive campaign), which made off-chain
+// error decoding ambiguous.
+// - CampaignNotFound      -> 51
+// - CampaignInactive      -> 133
+// - ExceedsStepLimit      -> 134
+// - SlippageExceeded      -> 135
+// - ReconciliationFailed  -> 136
+// - InvariantViolation    -> 137
+// - InsufficientBudget    -> 53
+// - InvalidStateTransition-> 40
 
 /// Type of pending change
 ///
@@ -1636,7 +1627,17 @@ impl StreamCursor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaginatedStreamsResponse {
     pub streams: soroban_sdk::Vec<StreamInfo>,
-    pub next_cursor: StreamCursor,
+    /// Cursor for the next page: empty when this is the last page, otherwise a
+    /// single element.
+    ///
+    /// Modelled as a 0-or-1 element `Vec` rather than the more natural
+    /// `Option<StreamCursor>` because soroban-sdk 27's `#[contracttype]`
+    /// derives only a fallible `TryFrom<StreamCursor> for ScVal`, while the
+    /// XDR crate's `ScVal: From<&Option<T>>` requires `T: Into<ScVal>`. An
+    /// `Option` of a user-defined contract type therefore fails to compile in
+    /// any build where `soroban-sdk/testutils` is unified in -- i.e. every
+    /// test build of this crate. `has_more` remains the flag to branch on.
+    pub next_cursor: soroban_sdk::Vec<StreamCursor>,
     pub has_more: bool,
 }
 
