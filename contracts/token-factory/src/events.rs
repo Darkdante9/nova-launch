@@ -1978,114 +1978,48 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Liquidity Mining Events (v1)
-// ═══════════════════════════════════════════════════════════════════════
+// ── Staking (#1757) ──────────────────────────────────────────────────────
 
-/// Emitted when a new liquidity mining pool is created.
+/// Emitted when a new staking pool is created.
 ///
-/// **Event Name**: lm_crt_v1
-pub fn emit_mining_pool_created(
+/// **Schema Version**: 1
+/// **Event Name**: stk_crt1
+pub fn emit_staking_pool_created(
     env: &Env,
     pool_id: u64,
-    admin: &Address,
+    token_index: u32,
     reward_token_index: u32,
-    stake_token_index: u32,
     reward_rate: i128,
-    start_time: u64,
-    end_time: u64,
 ) {
     env.events().publish(
-        (symbol_short!("lm_crt_v1"), pool_id),
-        (
-            admin.clone(),
-            reward_token_index,
-            stake_token_index,
-            reward_rate,
-            start_time,
-            end_time,
-        ),
+        (symbol_short!("stk_crt1"), pool_id),
+        (token_index, reward_token_index, reward_rate),
     );
 }
 
-/// Emitted when a provider deposits (stakes) tokens into a pool.
+/// Emitted when a user stakes into a pool.
 ///
-/// **Event Name**: lm_dep_v1
-pub fn emit_liquidity_deposited(
-    env: &Env,
-    pool_id: u64,
-    provider: &Address,
-    amount: i128,
-    new_total: i128,
-) {
-    env.events().publish(
-        (symbol_short!("lm_dep_v1"), pool_id),
-        (provider.clone(), amount, new_total),
-    );
-}
-
-/// Emitted when a provider withdraws staked tokens from a pool.
-///
-/// **Event Name**: lm_wdr_v1
-pub fn emit_liquidity_withdrawn(
-    env: &Env,
-    pool_id: u64,
-    provider: &Address,
-    amount: i128,
-    remaining: i128,
-) {
-    env.events().publish(
-        (symbol_short!("lm_wdr_v1"), pool_id),
-        (provider.clone(), amount, remaining),
-    );
-}
-
-/// Emitted when a provider claims their accumulated rewards.
-///
-/// **Event Name**: lm_clm_v1
-pub fn emit_mining_rewards_claimed(env: &Env, pool_id: u64, provider: &Address, amount: i128) {
-    env.events().publish(
-        (symbol_short!("lm_clm_v1"), pool_id),
-        (provider.clone(), amount),
-    );
-}
-
-/// Emitted when an admin pauses a mining pool.
-///
-/// **Event Name**: lm_pse_v1
-pub fn emit_mining_pool_paused(env: &Env, pool_id: u64, admin: &Address) {
+/// **Schema Version**: 1
+/// **Event Name**: stk_dep1
+pub fn emit_staked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
     env.events()
-        .publish((symbol_short!("lm_pse_v1"), pool_id), (admin.clone(),));
+        .publish((symbol_short!("stk_dep1"), pool_id), (user.clone(), amount));
 }
 
-/// Emitted when an admin resumes a paused mining pool.
+/// Emitted when a user unstakes from a pool.
 ///
-/// **Event Name**: lm_rsm_v1
-pub fn emit_mining_pool_resumed(env: &Env, pool_id: u64, admin: &Address) {
+/// **Schema Version**: 1
+/// **Event Name**: stk_wd1
+pub fn emit_unstaked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
     env.events()
-        .publish((symbol_short!("lm_rsm_v1"), pool_id), (admin.clone(),));
+        .publish((symbol_short!("stk_wd1"), pool_id), (user.clone(), amount));
 }
 
-/// Emitted when an admin ends a mining pool.
+/// Emitted when a user claims accrued staking rewards.
 ///
-/// **Event Name**: lm_end_v1
-pub fn emit_mining_pool_ended(env: &Env, pool_id: u64, admin: &Address) {
+/// **Schema Version**: 1
+/// **Event Name**: stk_clm1
+pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128) {
     env.events()
-        .publish((symbol_short!("lm_end_v1"), pool_id), (admin.clone(),));
-}
-
-/// Emitted when an admin updates the reward rate for a pool.
-///
-/// **Event Name**: lm_rru_v1
-pub fn emit_mining_reward_rate_updated(
-    env: &Env,
-    pool_id: u64,
-    admin: &Address,
-    old_rate: i128,
-    new_rate: i128,
-) {
-    env.events().publish(
-        (symbol_short!("lm_rru_v1"), pool_id),
-        (admin.clone(), old_rate, new_rate),
-    );
+        .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
 }

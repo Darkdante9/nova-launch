@@ -2267,61 +2267,75 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
-// ============================================================
-// Storage Functions - Liquidity Mining
-// ============================================================
+// ═══════════════════════════════════════════════════════════════════════
+// Staking storage (#1757)
+// ═══════════════════════════════════════════════════════════════════════
 
-/// Get a liquidity mining pool by id
-pub fn get_mining_pool(env: &Env, pool_id: u64) -> Option<crate::types::LiquidityMiningPool> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::MiningPool(pool_id))
+/// Get a staking pool by ID.
+pub fn get_staking_pool(env: &Env, pool_id: u64) -> Option<crate::types::StakingPool> {
+    env.storage().persistent().get(&DataKey::StakingPool(pool_id))
 }
 
-/// Store a liquidity mining pool
-pub fn set_mining_pool(env: &Env, pool_id: u64, pool: &crate::types::LiquidityMiningPool) {
+/// Save a staking pool.
+pub fn set_staking_pool(env: &Env, pool_id: u64, pool: &crate::types::StakingPool) {
     env.storage()
         .persistent()
-        .set(&DataKey::MiningPool(pool_id), pool);
+        .set(&DataKey::StakingPool(pool_id), pool);
 }
 
-/// Get the total number of liquidity mining pools created
-pub fn get_mining_pool_count(env: &Env) -> u64 {
+/// Allocate and return the next staking pool ID.
+pub fn increment_next_staking_pool_id(env: &Env) -> u64 {
+    let current = env
+        .storage()
+        .instance()
+        .get(&DataKey::NextStakingPoolId)
+        .unwrap_or(0u64);
     env.storage()
         .instance()
-        .get(&DataKey::MiningPoolCount)
+        .set(&DataKey::NextStakingPoolId, &(current + 1));
+    current
+}
+
+/// Get the total number of staking pools created.
+pub fn get_staking_pool_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::StakingPoolCount)
         .unwrap_or(0)
 }
 
-/// Allocate and return the next liquidity mining pool id, bumping the counter
-pub fn next_mining_pool_id(env: &Env) -> Result<u64, Error> {
-    let id = get_mining_pool_count(env);
-    let next = id.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().instance().set(&DataKey::MiningPoolCount, &next);
-    Ok(id)
+/// Increment and persist the staking pool counter.
+pub fn increment_staking_pool_count(env: &Env) -> Result<u64, Error> {
+    let count = get_staking_pool_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::StakingPoolCount, &count);
+    Ok(count)
 }
 
-/// Get a provider's position (stake + reward checkpoint) in a pool
-pub fn get_mining_position(
+/// Get a user's stake within a pool.
+pub fn get_user_stake(
     env: &Env,
     pool_id: u64,
-    provider: &Address,
-) -> Option<crate::types::ProviderStake> {
+    user: &Address,
+) -> Option<crate::types::StakeInfo> {
     env.storage()
         .persistent()
-        .get(&DataKey::MiningPosition(pool_id, provider.clone()))
+        .get(&DataKey::UserStake(pool_id, user.clone()))
 }
 
-/// Store a provider's position in a pool
-pub fn set_mining_position(
+/// Save a user's stake within a pool.
+pub fn set_user_stake(
     env: &Env,
     pool_id: u64,
-    provider: &Address,
-    position: &crate::types::ProviderStake,
+    user: &Address,
+    stake: &crate::types::StakeInfo,
 ) {
     env.storage()
         .persistent()
-        .set(&DataKey::MiningPosition(pool_id, provider.clone()), position);
+        .set(&DataKey::UserStake(pool_id, user.clone()), stake);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
