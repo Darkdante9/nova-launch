@@ -916,6 +916,53 @@ pub fn emit_stream_metadata_updated(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Recurring Stream Events (Issue #1765)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Emit recurring stream created event.
+///
+/// Topics: ("rstrm_cr", recurring_stream_id). Payload: (creator, recipient,
+/// amount_per_period, first_child_stream_id).
+pub fn emit_recurring_stream_created(
+    env: &Env,
+    recurring_stream_id: u64,
+    creator: &Address,
+    recipient: &Address,
+    amount_per_period: i128,
+    first_child_stream_id: u64,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_cr"), recurring_stream_id),
+        (creator, recipient, amount_per_period, first_child_stream_id),
+    );
+}
+
+/// Emit recurring stream period-triggered event (a new child stream was created).
+///
+/// Topics: ("rstrm_trg", recurring_stream_id). Payload: (child_stream_id, period_index).
+pub fn emit_recurring_period_triggered(
+    env: &Env,
+    recurring_stream_id: u64,
+    child_stream_id: u64,
+    period_index: u32,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_trg"), recurring_stream_id),
+        (child_stream_id, period_index),
+    );
+}
+
+/// Emit recurring stream cancelled event.
+///
+/// Topics: ("rstrm_cxl", recurring_stream_id). Payload: (canceller,).
+pub fn emit_recurring_stream_cancelled(env: &Env, recurring_stream_id: u64, canceller: &Address) {
+    env.events().publish(
+        (symbol_short!("rstrm_cxl"), recurring_stream_id),
+        (canceller.clone(),),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Proposal/Governance Events
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1337,6 +1384,42 @@ pub fn emit_campaign_cancelled(
     env.events().publish(
         (symbol_short!("cmp_cnl"), campaign_id),
         (cancelled_by, budget_remaining),
+    );
+}
+
+/// Emit buyback step settled event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: bb_stp_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "bb_stp_v1"
+/// - campaign_id: u64 - The campaign identifier
+///
+/// **Payload** (non-indexed):
+/// - executor: Address   - Address that executed the step
+/// - spent: i128         - Budget spent on this step, in stroops
+/// - bought: i128        - Target tokens acquired by the swap
+/// - burned: i128        - Target tokens actually burned
+/// - step_number: u32    - 1-based index of this step within the campaign
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+///
+/// Emitted once per successful `execute_buyback_step` call, after the campaign
+/// record has been committed. `bought` and `burned` are reported separately so
+/// off-chain consumers can detect a burn shortfall without re-deriving it.
+pub fn emit_buyback_step_settled(
+    env: &Env,
+    campaign_id: u64,
+    executor: &Address,
+    spent: i128,
+    bought: i128,
+    burned: i128,
+    step_number: u32,
+) {
+    env.events().publish(
+        (symbol_short!("bb_stp_v1"), campaign_id),
+        (executor, spent, bought, burned, step_number),
     );
 }
 /// Emit asset fractionalized event

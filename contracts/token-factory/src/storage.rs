@@ -2,8 +2,8 @@ use soroban_sdk::{Address, Env, Vec};
 
 use crate::commit_reveal::{CommitRecord, CommitRevealSession};
 use crate::types::{
-    BuybackCampaign, DataKey, Error, FactoryState, Reservation, RevealBatchContinuation,
-    SettleBatchContinuation, StreamCursor, TokenInfo,
+    BridgeLock, BuybackCampaign, DataKey, Error, FactoryState, Reservation,
+    RevealBatchContinuation, SettleBatchContinuation, StreamCursor, TokenInfo,
 };
 
 // ============================================================
@@ -1109,17 +1109,73 @@ pub fn increment_stream_count(env: &Env) -> Result<u32, Error> {
 }
 
 /// Get stream info by ID
+///
+/// Uses `persistent()` storage (not `temporary()`) — a payment stream must
+/// survive for its full vesting lifetime, which can span months, so it must
+/// not be subject to `temporary()`'s expiry-and-wipe semantics.
 pub fn get_stream(env: &Env, stream_id: u64) -> Option<crate::types::StreamInfo> {
-    env.storage()
-        .temporary()
-        .get(&DataKey::Stream(stream_id.try_into().unwrap()))
+    let key = DataKey::Stream(stream_id.try_into().unwrap());
+    env.storage().persistent().get(&key)
 }
 
 /// Store stream info
 pub fn set_stream(env: &Env, stream_id: u64, stream: &crate::types::StreamInfo) {
+    let key = DataKey::Stream(stream_id.try_into().unwrap());
+    env.storage().persistent().set(&key, stream);
+    bump_persistent(env, &key);
+}
+
+// ── Recurring stream storage functions ─────────────────────────
+
+/// Get the total number of recurring streams created
+pub fn get_recurring_stream_count(env: &Env) -> u64 {
     env.storage()
-        .temporary()
-        .set(&DataKey::Stream(stream_id.try_into().unwrap()), stream);
+        .instance()
+        .get(&DataKey::RecurringStreamCount)
+        .unwrap_or(0)
+}
+
+/// Increment the recurring-stream counter and return the new id
+pub fn increment_recurring_stream_count(env: &Env) -> Result<u64, Error> {
+    let id = get_recurring_stream_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::RecurringStreamCount, &id);
+    Ok(id)
+}
+
+/// Get a recurring stream by id
+pub fn get_recurring_stream(env: &Env, id: u64) -> Option<crate::types::RecurringStream> {
+    env.storage().persistent().get(&DataKey::RecurringStream(id))
+}
+
+/// Store a recurring stream
+pub fn set_recurring_stream(env: &Env, stream: &crate::types::RecurringStream) {
+    let key = DataKey::RecurringStream(stream.id);
+    env.storage().persistent().set(&key, stream);
+    bump_persistent(env, &key);
+}
+
+/// Append a recurring-stream id to a creator's index
+pub fn add_creator_recurring_stream(env: &Env, creator: &Address, recurring_stream_id: u64) {
+    let key = DataKey::CreatorRecurringStreams(creator.clone());
+    let mut ids: soroban_sdk::Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(soroban_sdk::Vec::new(env));
+    ids.push_back(recurring_stream_id);
+    env.storage().persistent().set(&key, &ids);
+}
+
+/// Get all recurring-stream ids created by an address
+pub fn get_creator_recurring_streams(env: &Env, creator: &Address) -> soroban_sdk::Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CreatorRecurringStreams(creator.clone()))
+        .unwrap_or(soroban_sdk::Vec::new(env))
 }
 
 /// Get next stream ID
