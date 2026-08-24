@@ -2210,6 +2210,63 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
+// ============================================================
+// Storage Functions - Liquidity Mining
+// ============================================================
+
+/// Get a liquidity mining pool by id
+pub fn get_mining_pool(env: &Env, pool_id: u64) -> Option<crate::types::LiquidityMiningPool> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::MiningPool(pool_id))
+}
+
+/// Store a liquidity mining pool
+pub fn set_mining_pool(env: &Env, pool_id: u64, pool: &crate::types::LiquidityMiningPool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MiningPool(pool_id), pool);
+}
+
+/// Get the total number of liquidity mining pools created
+pub fn get_mining_pool_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MiningPoolCount)
+        .unwrap_or(0)
+}
+
+/// Allocate and return the next liquidity mining pool id, bumping the counter
+pub fn next_mining_pool_id(env: &Env) -> Result<u64, Error> {
+    let id = get_mining_pool_count(env);
+    let next = id.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage().instance().set(&DataKey::MiningPoolCount, &next);
+    Ok(id)
+}
+
+/// Get a provider's position (stake + reward checkpoint) in a pool
+pub fn get_mining_position(
+    env: &Env,
+    pool_id: u64,
+    provider: &Address,
+) -> Option<crate::types::ProviderStake> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::MiningPosition(pool_id, provider.clone()))
+}
+
+/// Store a provider's position in a pool
+pub fn set_mining_position(
+    env: &Env,
+    pool_id: u64,
+    provider: &Address,
+    position: &crate::types::ProviderStake,
+) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MiningPosition(pool_id, provider.clone()), position);
+}
+
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
 //
 // Each test calls a getter *before* `initialize()` has been invoked and

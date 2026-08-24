@@ -962,6 +962,14 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
+    // ── Liquidity mining (pools distribute reward tokens to LPs proportional
+    // to their share of total deposits) ──
+    /// Liquidity mining pool record, keyed by pool id
+    MiningPool(u64),
+    /// Total number of liquidity mining pools created
+    MiningPoolCount,
+    /// A provider's position (stake + reward checkpoint) in a pool: (pool_id, provider)
+    MiningPosition(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1310,6 +1318,26 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
+    // Liquidity mining errors
+    /// Pool with the given id does not exist
+    pub const MiningPoolNotFound: Self = Self(133);
+    /// Operation requires the pool to be in the `Active` state
+    pub const MiningPoolNotActive: Self = Self(134);
+    /// `resume_mining_pool` called on a pool that is not `Paused`
+    pub const MiningPoolNotPaused: Self = Self(135);
+    /// `pause_mining_pool`/`resume_mining_pool`/`end_mining_pool` called on an
+    /// already-`Ended` pool, or `pause_mining_pool` called on an already-`Paused` pool
+    pub const MiningPoolInvalidTransition: Self = Self(136);
+    /// `reward_rate` is zero, negative, or exceeds the maximum allowed rate
+    pub const InvalidRewardRate: Self = Self(137);
+    /// Pool `start_time`/`end_time` window is invalid (start >= end, or end already elapsed)
+    pub const InvalidPoolTimeWindow: Self = Self(138);
+    /// Caller has no position (stake) recorded in the pool
+    pub const NoMiningPosition: Self = Self(139);
+    /// Withdrawal amount exceeds the caller's staked balance
+    pub const InsufficientStakedAmount: Self = Self(140);
+    /// The maximum number of liquidity mining pools has been reached
+    pub const TooManyMiningPools: Self = Self(141);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1333,6 +1361,15 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
+            133 => "MiningPoolNotFound",
+            134 => "MiningPoolNotActive",
+            135 => "MiningPoolNotPaused",
+            136 => "MiningPoolInvalidTransition",
+            137 => "InvalidRewardRate",
+            138 => "InvalidPoolTimeWindow",
+            139 => "NoMiningPosition",
+            140 => "InsufficientStakedAmount",
+            141 => "TooManyMiningPools",
             _ => "UnknownError",
         }
     }
