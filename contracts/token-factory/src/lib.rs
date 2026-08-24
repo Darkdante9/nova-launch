@@ -26,6 +26,7 @@ mod differential_engine;
 mod event_versions;
 mod events;
 mod milestone_verification;
+mod oracle;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_milestone_verification_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -51,6 +52,8 @@ mod game_history_test;
 mod proposal_queue_test;
 #[cfg(test)]
 mod event_versions_test;
+#[cfg(test)]
+mod oracle_integration_test;
 mod timelock;
 mod token_creation;
 mod treasury;
@@ -4150,54 +4153,58 @@ impl TokenFactory {
         Ok(())
     }
 
-    // ── Cross-chain bridge (lock/release primitive) ─────────────────────
+    // ── Oracle price feed ─────────────────────────────────────────────
 
-    /// Lock `amount` of `token` in contract custody for a cross-chain
-    /// transfer, returning the assigned nonce. Emits `brg_lck1`
-    /// ("bridge/initiated"). See `bridge.rs` for the trust-model notes.
-    pub fn lock_tokens(
-        env: Env,
-        caller: Address,
-        token: Address,
-        amount: i128,
-        destination_chain: String,
-        destination_address: Bytes,
-    ) -> Result<u64, Error> {
-        bridge::lock_tokens(
-            &env,
-            &caller,
-            &token,
-            amount,
-            destination_chain,
-            destination_address,
-        )
+    /// Configure the oracle's max staleness window, in seconds (admin only).
+    ///
+    /// # Errors
+    /// * `MissingAdmin` - Factory has not been initialized
+    /// * `Unauthorized` - Caller is not the factory admin
+    /// * `OracleInvalidConfig` - `max_age_seconds` is zero
+    pub fn configure_oracle(env: Env, admin: Address, max_age_seconds: u64) -> Result<(), Error> {
+        oracle::configure_oracle(&env, &admin, max_age_seconds)
     }
 
-    /// Release `amount` of `token` to `recipient`, authorized by `admin` and
-    /// the single-use `nonce` supplied verbatim from the source-chain lock.
-    /// Emits `brg_rel1` ("bridge/completed").
-    pub fn release_tokens(
+    /// Authorize or deauthorize `source` as an oracle price submitter (admin only).
+    ///
+    /// # Errors
+    /// * `MissingAdmin` - Factory has not been initialized
+    /// * `Unauthorized` - Caller is not the factory admin
+    pub fn set_oracle_authorized(
         env: Env,
         admin: Address,
-        nonce: u64,
-        token: Address,
-        recipient: Address,
-        amount: i128,
+        source: Address,
+        authorized: bool,
     ) -> Result<(), Error> {
-        bridge::release_tokens(&env, &admin, nonce, &token, &recipient, amount)
+        oracle::set_oracle_authorized(&env, &admin, &source, authorized)
     }
 
-    /// Look up a bridge lock record by nonce (source-side query).
-    pub fn get_bridge_lock(env: Env, nonce: u64) -> Option<BridgeLock> {
-        bridge::get_bridge_lock(&env, nonce)
+    /// Submit a price observation for `asset` (authorized sources only).
+    ///
+    /// # Errors
+    /// * `OracleUnauthorizedSource` - `source` has not been authorized by the admin
+    /// * `OracleInvalidPrice` - `price` is not strictly positive
+    pub fn submit_price(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        decimals: u32,
+    ) -> Result<(), Error> {
+        oracle::submit_price(&env, &source, &asset, price, decimals)
     }
 
-    /// Whether `nonce` has already been consumed by `release_tokens`
-    /// (destination-side query).
-    pub fn is_bridge_nonce_released(env: Env, nonce: u64) -> bool {
-        bridge::is_nonce_released(&env, nonce)
+    /// Read the latest price for `asset`, enforcing the configured staleness
+    /// window and rejecting non-positive values.
+    ///
+    /// # Errors
+    /// * `OraclePriceNotFound` - No price has ever been submitted for `asset`
+    /// * `OracleNotConfigured` - The oracle max-staleness window has not been set
+    /// * `OracleInvalidPrice` - The stored price is not strictly positive
+    /// * `OraclePriceStale` - The stored price is older than the configured max age
+    pub fn get_price(env: Env, asset: Address) -> Result<types::PriceData, Error> {
+        oracle::get_price(&env, &asset)
     }
-
 }
 
 // Temporarily disabled - requires create_token implementation

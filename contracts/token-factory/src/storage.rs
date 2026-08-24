@@ -2210,66 +2210,49 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
-// ── Cross-chain bridge storage (lock/release primitive) ─────────────────────
+// ── Oracle price feed storage ─────────────────────────────────────────────
 
-/// Assign and return the next monotonic bridge nonce, advancing the counter.
-pub fn get_next_bridge_nonce(env: &Env) -> Result<u64, Error> {
-    let nonce = env
-        .storage()
-        .instance()
-        .get(&DataKey::BridgeNextNonce)
-        .unwrap_or(0_u64);
-    let next = nonce.checked_add(1).ok_or(Error::ArithmeticError)?;
+/// Get the global oracle configuration, if it has been set via `configure_oracle`.
+pub fn get_oracle_config(env: &Env) -> Option<crate::types::OracleConfig> {
+    env.storage().instance().get(&DataKey::OracleConfig)
+}
+
+/// Set the global oracle configuration.
+pub fn set_oracle_config(env: &Env, config: &crate::types::OracleConfig) {
+    env.storage().instance().set(&DataKey::OracleConfig, config);
+}
+
+/// Returns `true` if `source` is authorized to submit oracle prices.
+pub fn is_oracle_source_authorized(env: &Env, source: &Address) -> bool {
     env.storage()
         .instance()
-        .set(&DataKey::BridgeNextNonce, &next);
-    Ok(nonce)
-}
-
-/// Get a bridge lock record by nonce.
-pub fn get_bridge_lock(env: &Env, nonce: u64) -> Option<BridgeLock> {
-    env.storage().persistent().get(&DataKey::BridgeLock(nonce))
-}
-
-/// Persist a bridge lock record, keyed by its own nonce.
-pub fn set_bridge_lock(env: &Env, lock: &BridgeLock) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::BridgeLock(lock.nonce), lock);
-}
-
-/// Whether `nonce` has already been consumed by `release_tokens`.
-pub fn is_bridge_nonce_released(env: &Env, nonce: u64) -> bool {
-    env.storage()
-        .persistent()
-        .get(&DataKey::BridgeReleased(nonce))
+        .get(&DataKey::OracleAuthorizedSource(source.clone()))
         .unwrap_or(false)
 }
 
-/// Mark `nonce` as released, so a later `release_tokens` call rejects it as a replay.
-pub fn set_bridge_nonce_released(env: &Env, nonce: u64) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::BridgeReleased(nonce), &true);
+/// Authorize or deauthorize `source` as an oracle price submitter.
+pub fn set_oracle_source_authorized(env: &Env, source: &Address, authorized: bool) {
+    env.storage().instance().set(
+        &DataKey::OracleAuthorizedSource(source.clone()),
+        &authorized,
+    );
 }
 
-/// Cumulative amount of `token` ever locked via `lock_tokens`.
-pub fn get_bridge_locked_total(env: &Env, token: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::BridgeLockedTotal(token.clone()))
-        .unwrap_or(0)
+/// Get the latest submitted price for `asset`, if any.
+pub fn get_oracle_price(env: &Env, asset: &Address) -> Option<crate::types::PriceData> {
+    let key = DataKey::OraclePrice(asset.clone());
+    let val = env.storage().persistent().get(&key);
+    if val.is_some() {
+        bump_persistent(env, &key);
+    }
+    val
 }
 
-/// Add `amount` to the cumulative locked total for `token`.
-pub fn add_bridge_locked_total(env: &Env, token: &Address, amount: i128) -> Result<(), Error> {
-    let updated = get_bridge_locked_total(env, token)
-        .checked_add(amount)
-        .ok_or(Error::ArithmeticError)?;
-    env.storage()
-        .persistent()
-        .set(&DataKey::BridgeLockedTotal(token.clone()), &updated);
-    Ok(())
+/// Store the latest submitted price for `asset`.
+pub fn set_oracle_price(env: &Env, asset: &Address, price: &crate::types::PriceData) {
+    let key = DataKey::OraclePrice(asset.clone());
+    env.storage().persistent().set(&key, price);
+    bump_persistent(env, &key);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
