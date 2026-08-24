@@ -994,13 +994,16 @@ pub enum DataKey {
     Reservation(u64),
     /// Ledgers a reservation may sit `Prepared` before it can be force-released
     ReservationTimeoutLedgers,
-    // ── Recurring payment streams (Issue #1765) ──
-    /// Recurring stream record, keyed by recurring_stream_id
-    RecurringStream(u64),
-    /// Total number of recurring streams created
-    RecurringStreamCount,
-    /// Keyset index of recurring-stream ids created by an address
-    CreatorRecurringStreams(Address),
+    /// Fractionalization vault record, keyed by vault id
+    FractionalVault(u64),
+    /// Running counter used to assign new fractionalization vault ids
+    FractionalVaultCount,
+    /// Secondary index from a locked asset's identity to its vault id, used
+    /// to reject double-fractionalization / enforce asset uniqueness:
+    /// (asset_contract, asset_id) -> vault_id
+    AssetFractionalizationIndex(Address, BytesN<32>),
+    /// Outstanding fractional share balance: (vault_id, holder) -> amount
+    FractionalShareBalance(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1349,17 +1352,13 @@ impl Error {
     pub const MetadataImmutable: Self = Self(131);
     // Multisig admin-change errors
     pub const DuplicateSigners: Self = Self(132);
-    // Buyback-and-burn campaign step-execution errors (issue #1764)
-    /// Step execution attempted on a campaign that is not in the Active state.
-    pub const CampaignInactive: Self = Self(133);
-    /// Requested step spend exceeds the campaign's `max_spend_per_step` cap.
-    pub const ExceedsStepLimit: Self = Self(134);
-    /// Swap returned fewer tokens than the slippage tolerance allows.
-    pub const SlippageExceeded: Self = Self(135);
-    /// Realized burn did not match the expected burn amount.
-    pub const ReconciliationFailed: Self = Self(136);
-    /// A monotonic campaign accounting invariant would be violated.
-    pub const InvariantViolation: Self = Self(137);
+    // Fractionalization errors
+    /// The (asset_contract, asset_id) pair already has an active fractionalization vault.
+    pub const AssetAlreadyFractionalized: Self = Self(133);
+    /// No active fractionalization vault exists for the given identifier.
+    pub const FractionalVaultNotFound: Self = Self(134);
+    /// Caller does not hold 100% of the outstanding shares supply.
+    pub const InsufficientShares: Self = Self(135);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1383,11 +1382,9 @@ impl Error {
             98 => "VaultOwnerChangeNotFound",
             99 => "VaultOwnerChangeAlreadyApproved",
             130 => "VaultCircuitBreakerActive",
-            133 => "CampaignInactive",
-            134 => "ExceedsStepLimit",
-            135 => "SlippageExceeded",
-            136 => "ReconciliationFailed",
-            137 => "InvariantViolation",
+            133 => "AssetAlreadyFractionalized",
+            134 => "FractionalVaultNotFound",
+            135 => "InsufficientShares",
             _ => "UnknownError",
         }
     }

@@ -9,6 +9,9 @@ extern crate std;
 
 mod compliance_reporting;
 mod freeze_functions;
+mod fractionalization;
+#[cfg(test)]
+mod fractionalization_test;
 mod governance;
 mod game_history;
 mod ipfs_pinning;
@@ -173,10 +176,9 @@ mod vault_balance_invariant_proptest;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, Milestone, PaginatedStreamsResponse,
-    PaginationCursor, PreflightItemResult, RecurringStream, RecurringStreamParams, Reservation,
-    StreamCursor, StreamInfo, StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats,
-    Vault, VaultStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, FractionalVault,
+    FractionalizationParams, PaginationCursor, PreflightItemResult, Reservation, StreamInfo,
+    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -4419,72 +4421,51 @@ impl TokenFactory {
         Ok(())
     }
 
-    // ── Commit-reveal auction tie-breaking (#1626) ───────────────────────
+    // ── Fractionalization entry points ──────────────────────────────────
 
-    /// Create a commit-reveal session for front-running-resistant tie-breaking
-    /// (admin only). Emits `cr_open1`. See `commit_reveal.rs` for full docs.
-    pub fn create_commit_reveal_session(
+    /// Lock a unique asset (identified by `params.asset_contract` +
+    /// `params.asset_id`) and mint `params.total_supply` fractional
+    /// ownership shares. `owner` must hold and authorize transfer of the
+    /// asset. Returns the id of the newly created fractionalization vault.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::InvalidTokenParams` - Shares token name/symbol are invalid
+    /// * `Error::InvalidAmount` - `total_supply` is zero or negative
+    /// * `Error::AssetAlreadyFractionalized` - This asset already has an active vault
+    pub fn fractionalize(
         env: Env,
-        admin: Address,
-        auction_id: u64,
-        commit_start: u64,
-        commit_end: u64,
-        reveal_end: u64,
+        owner: Address,
+        params: FractionalizationParams,
     ) -> Result<u64, Error> {
-        commit_reveal::create_commit_reveal_session(
-            &env,
-            &admin,
-            auction_id,
-            commit_start,
-            commit_end,
-            reveal_end,
-        )
+        fractionalization::fractionalize(&env, owner, params)
     }
 
-    /// Submit a hashed commitment (`SHA256(pre_image)`) during the commit
-    /// window. Emits `cr_cmit1`. Returns the bidder's commitment index.
-    pub fn submit_commitment(
-        env: Env,
-        session_id: u64,
-        bidder: Address,
-        commitment: BytesN<32>,
-    ) -> Result<u32, Error> {
-        commit_reveal::submit_commitment(&env, session_id, &bidder, commitment)
+    /// Redeem (unlock) a fractionalized asset. `caller` must hold and burn
+    /// 100% of the vault's outstanding shares; the locked asset is then
+    /// released back to `caller`.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::FractionalVaultNotFound` - No active fractional vault exists for `vault_id`
+    /// * `Error::InsufficientShares` - Caller does not hold 100% of the outstanding shares
+    pub fn redeem_fractional_asset(env: Env, caller: Address, vault_id: u64) -> Result<(), Error> {
+        fractionalization::redeem(&env, caller, vault_id)
     }
 
-    /// Reveal the pre-image committed to earlier, during the reveal window.
-    /// Emits `cr_rvl1`.
-    pub fn reveal_pre_image(
-        env: Env,
-        session_id: u64,
-        bidder: Address,
-        pre_image: BytesN<32>,
-    ) -> Result<(), Error> {
-        commit_reveal::reveal_pre_image(&env, session_id, &bidder, pre_image)
+    /// Return the fractionalization vault record for `vault_id`, if any.
+    pub fn get_fractional_vault(env: Env, vault_id: u64) -> Option<FractionalVault> {
+        storage::get_fractional_vault(&env, vault_id)
     }
 
-    /// Finalise a commit-reveal session, deriving the tie-break seed from the
-    /// hash-chain of all valid reveals in submission order. Callable by
-    /// anyone once the reveal window has closed. Emits `cr_fin1`.
-    pub fn finalise_commit_reveal_session(env: Env, session_id: u64) -> Result<BytesN<32>, Error> {
-        commit_reveal::finalise_session(&env, session_id)
+    /// Returns `true` if `vault_id` is currently locked in an active fractionalization vault.
+    pub fn is_asset_fractionalized(env: Env, vault_id: u64) -> bool {
+        fractionalization::is_fractionalized(&env, vault_id)
     }
 
-    /// Look up a commit-reveal session by id.
-    pub fn get_commit_reveal_session(
-        env: Env,
-        session_id: u64,
-    ) -> Option<commit_reveal::CommitRevealSession> {
-        commit_reveal::get_session(&env, session_id)
-    }
-
-    /// Look up a bidder's commitment record within a session.
-    pub fn get_commitment(
-        env: Env,
-        session_id: u64,
-        bidder: Address,
-    ) -> Option<commit_reveal::CommitRecord> {
-        commit_reveal::get_commitment(&env, session_id, &bidder)
+    /// Return a holder's outstanding fractional share balance for `vault_id`.
+    pub fn get_fractional_share_balance(env: Env, vault_id: u64, holder: Address) -> i128 {
+        storage::get_fractional_share_balance(&env, vault_id, &holder)
     }
 }
 

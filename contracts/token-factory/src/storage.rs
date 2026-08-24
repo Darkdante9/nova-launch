@@ -2267,76 +2267,75 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
-// ── Commit-reveal session storage (#1626) ────────────────────────────────────
+// ── Fractionalization storage functions ─────────────────────────────
 
-/// Assign and return the next commit-reveal session id, advancing the counter.
-pub fn get_next_commit_reveal_session_id(env: &Env) -> Result<u64, Error> {
-    let count: u64 = env
+/// Get a fractionalization vault record by its vault id.
+pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalVault(vault_id))
+}
+
+/// Persist a fractionalization vault record, keyed by its vault id.
+pub fn set_fractional_vault(env: &Env, vault: &crate::types::FractionalVault) {
+    let key = DataKey::FractionalVault(vault.id);
+    env.storage().persistent().set(&key, vault);
+    bump_persistent(env, &key);
+}
+
+/// Increment and return the next fractionalization vault id (starts at 1).
+pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
+    let count = env
         .storage()
         .instance()
-        .get(&DataKey::CommitRevealSessionCount)
+        .get(&DataKey::FractionalVaultCount)
         .unwrap_or(0_u64);
     let next = count.checked_add(1).ok_or(Error::ArithmeticError)?;
     env.storage()
         .instance()
-        .set(&DataKey::CommitRevealSessionCount, &next);
+        .set(&DataKey::FractionalVaultCount, &next);
     Ok(next)
 }
 
-/// Get a commit-reveal session by id.
-pub fn get_commit_reveal_session(env: &Env, session_id: u64) -> Option<CommitRevealSession> {
+/// Look up the vault id for a locked asset's identity, if it has ever been fractionalized.
+pub fn get_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+) -> Option<u64> {
     env.storage()
         .persistent()
-        .get(&DataKey::CommitRevealSession(session_id))
-}
-
-/// Persist a commit-reveal session, keyed by its own id.
-pub fn set_commit_reveal_session(env: &Env, session: &CommitRevealSession) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::CommitRevealSession(session.id), session);
-}
-
-/// Get a bidder's commitment record by (session, commitment index).
-pub fn get_commit_record(env: &Env, session_id: u64, index: u32) -> Option<CommitRecord> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::CommitRecord(session_id, index))
-}
-
-/// Persist a bidder's commitment record at (session, commitment index).
-pub fn set_commit_record(env: &Env, session_id: u64, index: u32, record: &CommitRecord) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::CommitRecord(session_id, index), record);
-}
-
-/// Whether `bidder` already has a commitment recorded in `session_id`.
-pub fn has_commit_reveal_bidder(env: &Env, session_id: u64, bidder: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .has(&DataKey::CommitRevealBidderIndex(
-            session_id,
-            bidder.clone(),
+        .get(&DataKey::AssetFractionalizationIndex(
+            asset_contract.clone(),
+            asset_id.clone(),
         ))
 }
 
-/// Get the commitment index assigned to `bidder` within `session_id`.
-pub fn get_commit_reveal_bidder_index(env: &Env, session_id: u64, bidder: &Address) -> Option<u32> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::CommitRevealBidderIndex(
-            session_id,
-            bidder.clone(),
-        ))
+/// Record which vault id a locked asset's identity maps to.
+pub fn set_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+    vault_id: u64,
+) {
+    let key = DataKey::AssetFractionalizationIndex(asset_contract.clone(), asset_id.clone());
+    env.storage().persistent().set(&key, &vault_id);
+    bump_persistent(env, &key);
 }
 
-/// Record the commitment index assigned to `bidder` within `session_id`.
-pub fn set_commit_reveal_bidder_index(env: &Env, session_id: u64, bidder: &Address, index: u32) {
-    env.storage().persistent().set(
-        &DataKey::CommitRevealBidderIndex(session_id, bidder.clone()),
-        &index,
-    );
+/// Get a holder's outstanding fractional share balance for a vault.
+pub fn get_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalShareBalance(vault_id, holder.clone()))
+        .unwrap_or(0)
+}
+
+/// Set a holder's outstanding fractional share balance for a vault.
+pub fn set_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address, balance: i128) {
+    let key = DataKey::FractionalShareBalance(vault_id, holder.clone());
+    env.storage().persistent().set(&key, &balance);
+    bump_persistent(env, &key);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
