@@ -1978,113 +1978,114 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
 
-// ── Commit-reveal auction tie-breaking events (#1626) ────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// Liquidity Mining Events (v1)
+// ═══════════════════════════════════════════════════════════════════════
 
-/// Emitted when a commit-reveal session is created via
-/// `create_commit_reveal_session`.
+/// Emitted when a new liquidity mining pool is created.
 ///
-/// **Schema Version**: 1
-/// **Event Name**: cr_open1
-///
-/// **Topics** (indexed):
-/// - Event name: "cr_open1"
-/// - session_id: u64 - The newly created session id
-///
-/// **Payload** (non-indexed):
-/// - creator: Address - The admin that created the session
-/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
-/// - commit_start: u64 - Timestamp the commit window opens
-/// - commit_end: u64 - Timestamp the commit window closes / reveal window opens
-/// - reveal_end: u64 - Timestamp the reveal window closes
-///
-/// **Schema Stability**: This schema is immutable. Any changes require a new version.
-pub fn emit_commit_reveal_session_created(
+/// **Event Name**: lm_crt_v1
+pub fn emit_mining_pool_created(
     env: &Env,
-    session_id: u64,
-    creator: &Address,
-    auction_id: u64,
-    commit_start: u64,
-    commit_end: u64,
-    reveal_end: u64,
+    pool_id: u64,
+    admin: &Address,
+    reward_token_index: u32,
+    stake_token_index: u32,
+    reward_rate: i128,
+    start_time: u64,
+    end_time: u64,
 ) {
     env.events().publish(
-        (symbol_short!("cr_open1"), session_id),
+        (symbol_short!("lm_crt_v1"), pool_id),
         (
-            creator.clone(),
-            auction_id,
-            commit_start,
-            commit_end,
-            reveal_end,
+            admin.clone(),
+            reward_token_index,
+            stake_token_index,
+            reward_rate,
+            start_time,
+            end_time,
         ),
     );
 }
 
-/// Emitted when a bidder submits a commitment via `submit_commitment`.
+/// Emitted when a provider deposits (stakes) tokens into a pool.
 ///
-/// **Schema Version**: 1
-/// **Event Name**: cr_cmit1
-///
-/// **Topics** (indexed):
-/// - Event name: "cr_cmit1"
-/// - session_id: u64 - The session the commitment was submitted to
-///
-/// **Payload** (non-indexed):
-/// - bidder: Address - The address that committed
-/// - index: u32 - The bidder's commitment index (used for hash-chain ordering)
-///
-/// **Schema Stability**: This schema is immutable. Any changes require a new version.
-pub fn emit_commitment_submitted(env: &Env, session_id: u64, bidder: &Address, index: u32) {
-    env.events().publish(
-        (symbol_short!("cr_cmit1"), session_id),
-        (bidder.clone(), index),
-    );
-}
-
-/// Emitted when a bidder successfully reveals a pre-image via `reveal_pre_image`.
-///
-/// **Schema Version**: 1
-/// **Event Name**: cr_rvl1
-///
-/// **Topics** (indexed):
-/// - Event name: "cr_rvl1"
-/// - session_id: u64 - The session the reveal was submitted to
-///
-/// **Payload** (non-indexed):
-/// - bidder: Address - The address that revealed
-/// - index: u32 - The bidder's commitment index
-///
-/// **Schema Stability**: This schema is immutable. Any changes require a new version.
-pub fn emit_pre_image_revealed(env: &Env, session_id: u64, bidder: &Address, index: u32) {
-    env.events().publish(
-        (symbol_short!("cr_rvl1"), session_id),
-        (bidder.clone(), index),
-    );
-}
-
-/// Emitted when a session is finalised via `finalise_commit_reveal_session`.
-///
-/// **Schema Version**: 1
-/// **Event Name**: cr_fin1
-///
-/// **Topics** (indexed):
-/// - Event name: "cr_fin1"
-/// - session_id: u64 - The finalised session id
-///
-/// **Payload** (non-indexed):
-/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
-/// - seed: BytesN<32> - The derived tie-break seed
-/// - reveal_count: u32 - Number of valid (non-forfeited) reveals folded into the seed
-///
-/// **Schema Stability**: This schema is immutable. Any changes require a new version.
-pub fn emit_commit_reveal_finalised(
+/// **Event Name**: lm_dep_v1
+pub fn emit_liquidity_deposited(
     env: &Env,
-    session_id: u64,
-    auction_id: u64,
-    seed: &BytesN<32>,
-    reveal_count: u32,
+    pool_id: u64,
+    provider: &Address,
+    amount: i128,
+    new_total: i128,
 ) {
     env.events().publish(
-        (symbol_short!("cr_fin1"), session_id),
-        (auction_id, seed.clone(), reveal_count),
+        (symbol_short!("lm_dep_v1"), pool_id),
+        (provider.clone(), amount, new_total),
+    );
+}
+
+/// Emitted when a provider withdraws staked tokens from a pool.
+///
+/// **Event Name**: lm_wdr_v1
+pub fn emit_liquidity_withdrawn(
+    env: &Env,
+    pool_id: u64,
+    provider: &Address,
+    amount: i128,
+    remaining: i128,
+) {
+    env.events().publish(
+        (symbol_short!("lm_wdr_v1"), pool_id),
+        (provider.clone(), amount, remaining),
+    );
+}
+
+/// Emitted when a provider claims their accumulated rewards.
+///
+/// **Event Name**: lm_clm_v1
+pub fn emit_mining_rewards_claimed(env: &Env, pool_id: u64, provider: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("lm_clm_v1"), pool_id),
+        (provider.clone(), amount),
+    );
+}
+
+/// Emitted when an admin pauses a mining pool.
+///
+/// **Event Name**: lm_pse_v1
+pub fn emit_mining_pool_paused(env: &Env, pool_id: u64, admin: &Address) {
+    env.events()
+        .publish((symbol_short!("lm_pse_v1"), pool_id), (admin.clone(),));
+}
+
+/// Emitted when an admin resumes a paused mining pool.
+///
+/// **Event Name**: lm_rsm_v1
+pub fn emit_mining_pool_resumed(env: &Env, pool_id: u64, admin: &Address) {
+    env.events()
+        .publish((symbol_short!("lm_rsm_v1"), pool_id), (admin.clone(),));
+}
+
+/// Emitted when an admin ends a mining pool.
+///
+/// **Event Name**: lm_end_v1
+pub fn emit_mining_pool_ended(env: &Env, pool_id: u64, admin: &Address) {
+    env.events()
+        .publish((symbol_short!("lm_end_v1"), pool_id), (admin.clone(),));
+}
+
+/// Emitted when an admin updates the reward rate for a pool.
+///
+/// **Event Name**: lm_rru_v1
+pub fn emit_mining_reward_rate_updated(
+    env: &Env,
+    pool_id: u64,
+    admin: &Address,
+    old_rate: i128,
+    new_rate: i128,
+) {
+    env.events().publish(
+        (symbol_short!("lm_rru_v1"), pool_id),
+        (admin.clone(), old_rate, new_rate),
     );
 }

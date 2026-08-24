@@ -2267,75 +2267,61 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
-// ── Fractionalization storage functions ─────────────────────────────
+// ============================================================
+// Storage Functions - Liquidity Mining
+// ============================================================
 
-/// Get a fractionalization vault record by its vault id.
-pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
+/// Get a liquidity mining pool by id
+pub fn get_mining_pool(env: &Env, pool_id: u64) -> Option<crate::types::LiquidityMiningPool> {
     env.storage()
         .persistent()
-        .get(&DataKey::FractionalVault(vault_id))
+        .get(&DataKey::MiningPool(pool_id))
 }
 
-/// Persist a fractionalization vault record, keyed by its vault id.
-pub fn set_fractional_vault(env: &Env, vault: &crate::types::FractionalVault) {
-    let key = DataKey::FractionalVault(vault.id);
-    env.storage().persistent().set(&key, vault);
-    bump_persistent(env, &key);
+/// Store a liquidity mining pool
+pub fn set_mining_pool(env: &Env, pool_id: u64, pool: &crate::types::LiquidityMiningPool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MiningPool(pool_id), pool);
 }
 
-/// Increment and return the next fractionalization vault id (starts at 1).
-pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
-    let count = env
-        .storage()
-        .instance()
-        .get(&DataKey::FractionalVaultCount)
-        .unwrap_or(0_u64);
-    let next = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+/// Get the total number of liquidity mining pools created
+pub fn get_mining_pool_count(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .set(&DataKey::FractionalVaultCount, &next);
-    Ok(next)
-}
-
-/// Look up the vault id for a locked asset's identity, if it has ever been fractionalized.
-pub fn get_asset_fractionalization_index(
-    env: &Env,
-    asset_contract: &Address,
-    asset_id: &soroban_sdk::BytesN<32>,
-) -> Option<u64> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::AssetFractionalizationIndex(
-            asset_contract.clone(),
-            asset_id.clone(),
-        ))
-}
-
-/// Record which vault id a locked asset's identity maps to.
-pub fn set_asset_fractionalization_index(
-    env: &Env,
-    asset_contract: &Address,
-    asset_id: &soroban_sdk::BytesN<32>,
-    vault_id: u64,
-) {
-    let key = DataKey::AssetFractionalizationIndex(asset_contract.clone(), asset_id.clone());
-    env.storage().persistent().set(&key, &vault_id);
-    bump_persistent(env, &key);
-}
-
-/// Get a holder's outstanding fractional share balance for a vault.
-pub fn get_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::FractionalShareBalance(vault_id, holder.clone()))
+        .get(&DataKey::MiningPoolCount)
         .unwrap_or(0)
 }
 
-/// Set a holder's outstanding fractional share balance for a vault.
-pub fn set_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address, balance: i128) {
-    let key = DataKey::FractionalShareBalance(vault_id, holder.clone());
-    env.storage().persistent().set(&key, &balance);
-    bump_persistent(env, &key);
+/// Allocate and return the next liquidity mining pool id, bumping the counter
+pub fn next_mining_pool_id(env: &Env) -> Result<u64, Error> {
+    let id = get_mining_pool_count(env);
+    let next = id.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage().instance().set(&DataKey::MiningPoolCount, &next);
+    Ok(id)
+}
+
+/// Get a provider's position (stake + reward checkpoint) in a pool
+pub fn get_mining_position(
+    env: &Env,
+    pool_id: u64,
+    provider: &Address,
+) -> Option<crate::types::ProviderStake> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::MiningPosition(pool_id, provider.clone()))
+}
+
+/// Store a provider's position in a pool
+pub fn set_mining_position(
+    env: &Env,
+    pool_id: u64,
+    provider: &Address,
+    position: &crate::types::ProviderStake,
+) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MiningPosition(pool_id, provider.clone()), position);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────

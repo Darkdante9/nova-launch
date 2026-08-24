@@ -31,6 +31,7 @@ mod invariants;
 mod differential_engine;
 mod event_versions;
 mod events;
+mod liquidity_mining;
 mod milestone_verification;
 mod oracle;
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -52,6 +53,8 @@ mod storage_migration;
 mod test_helpers;
 #[cfg(test)]
 mod freeze_functions_test;
+#[cfg(test)]
+mod liquidity_mining_test;
 #[cfg(test)]
 mod game_history_test;
 #[cfg(test)]
@@ -176,9 +179,9 @@ mod vault_balance_invariant_proptest;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, FractionalVault,
-    FractionalizationParams, PaginationCursor, PreflightItemResult, Reservation, StreamInfo,
-    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, LiquidityMiningPool,
+    PaginationCursor, PreflightItemResult, ProviderStake, Reservation, StreamInfo, StreamPage,
+    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -4421,52 +4424,152 @@ impl TokenFactory {
         Ok(())
     }
 
-    // ── Fractionalization entry points ──────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Liquidity Mining Program
+    // ─────────────────────────────────────────────────────────────────────
 
-    /// Lock a unique asset (identified by `params.asset_contract` +
-    /// `params.asset_id`) and mint `params.total_supply` fractional
-    /// ownership shares. `owner` must hold and authorize transfer of the
-    /// asset. Returns the id of the newly created fractionalization vault.
+    /// Create a new liquidity mining pool (admin only)
     ///
-    /// # Errors
-    /// * `Error::ContractPaused` - Contract is paused
-    /// * `Error::InvalidTokenParams` - Shares token name/symbol are invalid
-    /// * `Error::InvalidAmount` - `total_supply` is zero or negative
-    /// * `Error::AssetAlreadyFractionalized` - This asset already has an active vault
-    pub fn fractionalize(
+    /// Initializes a pool that distributes `reward_token_index` tokens to
+    /// providers who deposit `stake_token_index` tokens, proportional to
+    /// their share of the pool. The pool starts `Active` immediately.
+    ///
+    /// # Arguments
+    /// * `admin` - Admin address (must authorize)
+    /// * `reward_token_index` - Token index for reward distribution
+    /// * `stake_token_index` - Token index that providers deposit
+    /// * `reward_rate` - Rewards distributed per second across the pool (in stroops)
+    /// * `start_time` - Unix timestamp when the pool opens for deposits
+    /// * `end_time` - Unix timestamp when reward accrual stops
+    ///
+    /// # Returns
+    /// The new pool's id.
+    pub fn create_mining_pool(
         env: Env,
-        owner: Address,
-        params: FractionalizationParams,
+        admin: Address,
+        reward_token_index: u32,
+        stake_token_index: u32,
+        reward_rate: i128,
+        start_time: u64,
+        end_time: u64,
     ) -> Result<u64, Error> {
-        fractionalization::fractionalize(&env, owner, params)
+        liquidity_mining::create_mining_pool(
+            &env,
+            &admin,
+            reward_token_index,
+            stake_token_index,
+            reward_rate,
+            start_time,
+            end_time,
+        )
     }
 
-    /// Redeem (unlock) a fractionalized asset. `caller` must hold and burn
-    /// 100% of the vault's outstanding shares; the locked asset is then
-    /// released back to `caller`.
+    /// Deposit stake tokens into a liquidity mining pool
     ///
-    /// # Errors
-    /// * `Error::ContractPaused` - Contract is paused
-    /// * `Error::FractionalVaultNotFound` - No active fractional vault exists for `vault_id`
-    /// * `Error::InsufficientShares` - Caller does not hold 100% of the outstanding shares
-    pub fn redeem_fractional_asset(env: Env, caller: Address, vault_id: u64) -> Result<(), Error> {
-        fractionalization::redeem(&env, caller, vault_id)
+    /// Updates the caller's position and begins accruing rewards
+    /// proportional to their share of the pool's total deposits.
+    ///
+    /// # Arguments
+    /// * `provider` - Address depositing tokens (must authorize)
+    /// * `pool_id` - Pool to deposit into
+    /// * `amount` - Amount of stake tokens to deposit
+    pub fn deposit_liquidity(
+        env: Env,
+        provider: Address,
+        pool_id: u64,
+        amount: i128,
+    ) -> Result<(), Error> {
+        liquidity_mining::deposit(&env, &provider, pool_id, amount)
     }
 
-    /// Return the fractionalization vault record for `vault_id`, if any.
-    pub fn get_fractional_vault(env: Env, vault_id: u64) -> Option<FractionalVault> {
-        storage::get_fractional_vault(&env, vault_id)
+    /// Withdraw staked tokens from a liquidity mining pool
+    ///
+    /// Pending rewards are preserved but not automatically claimed; call
+    /// `claim_mining_rewards` to collect them.
+    ///
+    /// # Arguments
+    /// * `provider` - Address withdrawing tokens (must authorize)
+    /// * `pool_id` - Pool to withdraw from
+    /// * `amount` - Amount of stake tokens to withdraw
+    pub fn withdraw_liquidity(
+        env: Env,
+        provider: Address,
+        pool_id: u64,
+        amount: i128,
+    ) -> Result<(), Error> {
+        liquidity_mining::withdraw(&env, &provider, pool_id, amount)
     }
 
-    /// Returns `true` if `vault_id` is currently locked in an active fractionalization vault.
-    pub fn is_asset_fractionalized(env: Env, vault_id: u64) -> bool {
-        fractionalization::is_fractionalized(&env, vault_id)
+    /// Claim accumulated rewards from a liquidity mining pool
+    ///
+    /// # Arguments
+    /// * `provider` - Address claiming rewards (must authorize)
+    /// * `pool_id` - Pool to claim from
+    ///
+    /// # Returns
+    /// The amount of reward tokens claimed.
+    pub fn claim_mining_rewards(env: Env, provider: Address, pool_id: u64) -> Result<i128, Error> {
+        liquidity_mining::claim_rewards(&env, &provider, pool_id)
     }
 
-    /// Return a holder's outstanding fractional share balance for `vault_id`.
-    pub fn get_fractional_share_balance(env: Env, vault_id: u64, holder: Address) -> i128 {
-        storage::get_fractional_share_balance(&env, vault_id, &holder)
+    /// Pause an active liquidity mining pool (admin only)
+    pub fn pause_mining_pool(env: Env, admin: Address, pool_id: u64) -> Result<(), Error> {
+        liquidity_mining::pause_mining_pool(&env, &admin, pool_id)
     }
+
+    /// Resume a paused liquidity mining pool (admin only)
+    pub fn resume_mining_pool(env: Env, admin: Address, pool_id: u64) -> Result<(), Error> {
+        liquidity_mining::resume_mining_pool(&env, &admin, pool_id)
+    }
+
+    /// End a liquidity mining pool, permanently stopping reward accrual (admin only)
+    pub fn end_mining_pool(env: Env, admin: Address, pool_id: u64) -> Result<(), Error> {
+        liquidity_mining::end_mining_pool(&env, &admin, pool_id)
+    }
+
+    /// Update the reward rate for an active liquidity mining pool (admin only)
+    ///
+    /// # Arguments
+    /// * `admin` - Admin address (must authorize)
+    /// * `pool_id` - Pool to update
+    /// * `new_reward_rate` - New reward rate distributed per second across the pool
+    pub fn update_mining_reward_rate(
+        env: Env,
+        admin: Address,
+        pool_id: u64,
+        new_reward_rate: i128,
+    ) -> Result<(), Error> {
+        liquidity_mining::update_reward_rate(&env, &admin, pool_id, new_reward_rate)
+    }
+
+    /// Get a liquidity mining pool by id
+    pub fn get_mining_pool(env: Env, pool_id: u64) -> Option<LiquidityMiningPool> {
+        liquidity_mining::get_mining_pool(&env, pool_id)
+    }
+
+    /// Get a provider's position (stake + reward checkpoint) in a pool
+    pub fn get_mining_position(
+        env: Env,
+        pool_id: u64,
+        provider: Address,
+    ) -> Option<ProviderStake> {
+        liquidity_mining::get_provider_position(&env, pool_id, &provider)
+    }
+
+    /// Get the current claimable reward amount for a provider in a pool
+    pub fn get_claimable_mining_rewards(
+        env: Env,
+        pool_id: u64,
+        provider: Address,
+    ) -> Result<i128, Error> {
+        liquidity_mining::get_claimable_rewards(&env, pool_id, &provider)
+    }
+
+    /// Get the total number of liquidity mining pools created
+    pub fn get_mining_pool_count(env: Env) -> u64 {
+        liquidity_mining::get_mining_pool_count(&env)
+    }
+
 }
 
 // Temporarily disabled - requires create_token implementation
