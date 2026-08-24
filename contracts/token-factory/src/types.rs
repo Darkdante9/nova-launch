@@ -689,12 +689,10 @@ pub struct PriceData {
 ///
 /// # Fields
 /// * `max_age_seconds` - Maximum acceptable age of a price before it is considered stale
-/// * `min_sources` - Minimum number of authorized sources that must have submitted a price
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
     pub max_age_seconds: u64,
-    pub min_sources: u32,
 }
 
 /// Batch fee update structure for Phase 2 optimization
@@ -789,6 +787,35 @@ pub struct AmmPool {
     pub reserve_a: i128,
     pub reserve_b: i128,
     pub total_lp: i128,
+}
+
+/// A record of tokens escrowed by `lock_tokens` for a cross-chain bridge
+/// transfer, keyed by the contract-assigned `nonce`.
+///
+/// The nonce must be supplied verbatim to `release_tokens` (on the
+/// destination-side deployment of this contract) to authorize release; the
+/// lock record itself is not consulted by `release_tokens` — verifying that
+/// a matching lock actually occurred on the source chain is an off-chain /
+/// admin responsibility (see `bridge.rs` module docs).
+///
+/// # Fields
+/// * `nonce` - Monotonically-assigned, single-use identifier for this lock
+/// * `sender` - Address that authorized and funded the lock
+/// * `token` - Token contract address that was locked
+/// * `amount` - Amount of `token` escrowed (smallest unit)
+/// * `destination_chain` - Free-form identifier of the target chain (e.g. "ethereum")
+/// * `destination_address` - Raw destination-chain address bytes (format is chain-specific)
+/// * `locked_at` - Ledger timestamp when the lock was created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeLock {
+    pub nonce: u64,
+    pub sender: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub destination_chain: String,
+    pub destination_address: Bytes,
+    pub locked_at: u64,
 }
 
 /// Storage keys for contract data
