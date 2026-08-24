@@ -1978,59 +1978,113 @@ pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
 }
 
-// ── Oracle price feed events ────────────────────────────────────────────────
+// ── Commit-reveal auction tie-breaking events (#1626) ────────────────────────
 
-/// Emitted when the admin (re)configures the oracle's max staleness window.
+/// Emitted when a commit-reveal session is created via
+/// `create_commit_reveal_session`.
 ///
 /// **Schema Version**: 1
-/// **Event Name**: orc_cfg1
-pub fn emit_oracle_configured(env: &Env, admin: &Address, max_age_seconds: u64) {
-    env.events().publish(
-        (symbol_short!("orc_cfg1"),),
-        (admin.clone(), max_age_seconds),
-    );
-}
-
-/// Emitted when the admin authorizes or deauthorizes an oracle price source.
-///
-/// **Schema Version**: 1
-/// **Event Name**: orc_src1
-pub fn emit_oracle_source_authorized(
-    env: &Env,
-    admin: &Address,
-    source: &Address,
-    authorized: bool,
-) {
-    env.events().publish(
-        (symbol_short!("orc_src1"),),
-        (admin.clone(), source.clone(), authorized),
-    );
-}
-
-/// Emitted when an authorized source submits a new price for `asset`.
-///
-/// **Schema Version**: 1
-/// **Event Name**: orc_pr1
+/// **Event Name**: cr_open1
 ///
 /// **Topics** (indexed):
-/// - Event name: "orc_pr1"
-/// - asset: Address - The asset the price was submitted for
+/// - Event name: "cr_open1"
+/// - session_id: u64 - The newly created session id
 ///
 /// **Payload** (non-indexed):
-/// - source: Address - The authorized source that submitted the price
-/// - price: i128 - The raw submitted price
-/// - decimals: u32 - Decimal places in `price`
-/// - timestamp: u64 - Ledger timestamp the price was recorded at
-pub fn emit_price_submitted(
+/// - creator: Address - The admin that created the session
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - commit_start: u64 - Timestamp the commit window opens
+/// - commit_end: u64 - Timestamp the commit window closes / reveal window opens
+/// - reveal_end: u64 - Timestamp the reveal window closes
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_session_created(
     env: &Env,
-    asset: &Address,
-    source: &Address,
-    price: i128,
-    decimals: u32,
-    timestamp: u64,
+    session_id: u64,
+    creator: &Address,
+    auction_id: u64,
+    commit_start: u64,
+    commit_end: u64,
+    reveal_end: u64,
 ) {
     env.events().publish(
-        (symbol_short!("orc_pr1"), asset.clone()),
-        (source.clone(), price, decimals, timestamp),
+        (symbol_short!("cr_open1"), session_id),
+        (
+            creator.clone(),
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
+        ),
+    );
+}
+
+/// Emitted when a bidder submits a commitment via `submit_commitment`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_cmit1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_cmit1"
+/// - session_id: u64 - The session the commitment was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that committed
+/// - index: u32 - The bidder's commitment index (used for hash-chain ordering)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commitment_submitted(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_cmit1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a bidder successfully reveals a pre-image via `reveal_pre_image`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_rvl1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_rvl1"
+/// - session_id: u64 - The session the reveal was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that revealed
+/// - index: u32 - The bidder's commitment index
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_pre_image_revealed(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_rvl1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a session is finalised via `finalise_commit_reveal_session`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_fin1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_fin1"
+/// - session_id: u64 - The finalised session id
+///
+/// **Payload** (non-indexed):
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - seed: BytesN<32> - The derived tie-break seed
+/// - reveal_count: u32 - Number of valid (non-forfeited) reveals folded into the seed
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_finalised(
+    env: &Env,
+    session_id: u64,
+    auction_id: u64,
+    seed: &BytesN<32>,
+    reveal_count: u32,
+) {
+    env.events().publish(
+        (symbol_short!("cr_fin1"), session_id),
+        (auction_id, seed.clone(), reveal_count),
     );
 }

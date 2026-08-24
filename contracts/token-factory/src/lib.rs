@@ -19,11 +19,9 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
-mod buyback;
-mod campaign;
-mod campaign_validation;
+mod commit_reveal;
 #[cfg(test)]
-mod campaign_state_test;
+mod commit_reveal_test;
 mod settlement;
 mod clawback;
 mod invariants;
@@ -4421,178 +4419,73 @@ impl TokenFactory {
         Ok(())
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Buyback-and-burn campaigns (issue #1764)
-    //
-    // `buyback` owns the campaign record and the money movement;
-    // `campaign` owns the state machine. Both refuse to act while the
-    // contract is globally paused.
-    // ─────────────────────────────────────────────────────────────────────
+    // ── Commit-reveal auction tie-breaking (#1626) ───────────────────────
 
-    /// Create a treasury-funded buyback-and-burn campaign.
-    ///
-    /// The campaign starts `Active` and advances one capped step at a time via
-    /// [`TokenFactory::execute_buyback_step`]. Only the contract admin or the
-    /// target token's creator may commit treasury funds this way.
-    ///
-    /// # Arguments
-    /// * `creator` - Address creating the campaign (admin or token creator)
-    /// * `token_index` - Index of the factory-issued token to buy back and burn
-    /// * `budget` - Total budget for the campaign, in stroops
-    /// * `max_spend_per_step` - Hard cap on a single step's spend
-    /// * `start_time` / `end_time` - Ledger timestamps bounding execution
-    /// * `min_interval` - Minimum seconds between step executions
-    /// * `max_slippage_bps` - Slippage tolerance in basis points
-    /// * `source_token` - Treasury token being spent
-    ///
-    /// # Returns
-    /// * `Ok(u64)` - The new campaign ID
-    ///
-    /// # Errors
-    /// * `ContractPaused` - the factory is paused
-    /// * `Unauthorized` - caller is neither admin nor the token's creator
-    /// * `TokenNotFound` - `token_index` does not exist
-    /// * `InvalidBudget` / `InvalidAmount` / `InvalidParameters` / `InvalidTimeWindow`
-    ///   - a parameter is outside its allowed bounds
-    ///
-    /// Emits `cmp_crt`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_buyback_campaign(
+    /// Create a commit-reveal session for front-running-resistant tie-breaking
+    /// (admin only). Emits `cr_open1`. See `commit_reveal.rs` for full docs.
+    pub fn create_commit_reveal_session(
         env: Env,
-        creator: Address,
-        token_index: u32,
-        budget: i128,
-        max_spend_per_step: i128,
-        start_time: u64,
-        end_time: u64,
-        min_interval: u64,
-        max_slippage_bps: u32,
-        source_token: Address,
+        admin: Address,
+        auction_id: u64,
+        commit_start: u64,
+        commit_end: u64,
+        reveal_end: u64,
     ) -> Result<u64, Error> {
-        if storage::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
-        buyback::create_campaign(
+        commit_reveal::create_commit_reveal_session(
             &env,
-            &creator,
-            token_index,
-            budget,
-            max_spend_per_step,
-            start_time,
-            end_time,
-            min_interval,
-            max_slippage_bps,
-            &source_token,
+            &admin,
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
         )
     }
 
-    /// Read a buyback campaign by ID.
-    ///
-    /// # Errors
-    /// * `CampaignNotFound` - no campaign with `campaign_id`
-    pub fn get_buyback_campaign(
+    /// Submit a hashed commitment (`SHA256(pre_image)`) during the commit
+    /// window. Emits `cr_cmit1`. Returns the bidder's commitment index.
+    pub fn submit_commitment(
         env: Env,
-        campaign_id: u64,
-    ) -> Result<types::BuybackCampaign, Error> {
-        buyback::get_campaign(&env, campaign_id)
+        session_id: u64,
+        bidder: Address,
+        commitment: BytesN<32>,
+    ) -> Result<u32, Error> {
+        commit_reveal::submit_commitment(&env, session_id, &bidder, commitment)
     }
 
-    /// Total number of campaigns ever created.
-    pub fn get_campaign_count(env: Env) -> u64 {
-        storage::get_campaign_count(&env)
-    }
-
-    /// Number of campaigns currently in the `Active` state.
-    pub fn get_active_campaign_count(env: Env) -> u32 {
-        storage::get_active_campaign_count(&env)
-    }
-
-    /// Execute one buyback step: spend budget, acquire the token, burn it.
-    ///
-    /// `quoted_tokens_out` is the off-chain router's quote for `quote_amount`;
-    /// `min_tokens_out` is the caller's own floor. The step settles only if the
-    /// fill clears both that floor and the campaign's slippage-adjusted floor.
-    ///
-    /// # Errors
-    /// * `ContractPaused` - the factory is paused
-    /// * `CampaignInactive` - the campaign is not `Active`
-    /// * `ExceedsStepLimit` - `quote_amount` exceeds `max_spend_per_step`
-    /// * `InsufficientBudget` - `quote_amount` exceeds the unspent budget
-    /// * `SlippageExceeded` - the fill was below the slippage floor
-    /// * see [`buyback::execute_buyback_step`] for the full surface
-    ///
-    /// Emits `bb_stp_v1`.
-    pub fn execute_buyback_step(
+    /// Reveal the pre-image committed to earlier, during the reveal window.
+    /// Emits `cr_rvl1`.
+    pub fn reveal_pre_image(
         env: Env,
-        caller: Address,
-        campaign_id: u64,
-        quote_amount: i128,
-        quoted_tokens_out: i128,
-        min_tokens_out: i128,
-    ) -> Result<buyback::ExecutionResult, Error> {
-        if storage::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
-        buyback::execute_buyback_step(
-            &env,
-            &caller,
-            campaign_id,
-            quote_amount,
-            quoted_tokens_out,
-            min_tokens_out,
-        )
-    }
-
-    /// Pause an active campaign (`Active -> Paused`). Owner or admin only.
-    ///
-    /// Step execution stops immediately; the remaining budget stays committed.
-    /// Re-pausing a paused campaign returns `CampaignAlreadyPaused` rather than
-    /// succeeding, so a replayed transaction cannot double-apply.
-    ///
-    /// Emits `cmp_ps_v1`.
-    pub fn pause_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::pause_campaign(&env, &caller, campaign_id)
-    }
-
-    /// Resume a paused campaign (`Paused -> Active`). Owner or admin only.
-    ///
-    /// Resuming an already-active campaign returns `CampaignNotPaused`.
-    ///
-    /// Emits `cmp_rs_v1`.
-    pub fn resume_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::resume_campaign(&env, &caller, campaign_id)
-    }
-
-    /// Cancel a campaign (`Active | Paused -> Cancelled`). Owner or admin only.
-    ///
-    /// Terminal. The unspent budget is reported in the event so treasury
-    /// reconciliation can release it.
-    ///
-    /// Emits `cmp_cnl`.
-    pub fn cancel_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::cancel_campaign(&env, &caller, campaign_id)
-    }
-
-    /// Finalize a campaign (`Active | Paused -> Completed`). Owner or admin only.
-    ///
-    /// Terminal. Emits `cmp_cmp` with the final accounting and `cmp_fin` with
-    /// the finalizing address.
-    pub fn finalize_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::finalize_campaign(&env, &caller, campaign_id)
-    }
-
-    /// Idempotent retry of [`TokenFactory::finalize_campaign`].
-    ///
-    /// Returns `Ok(())` if the campaign is already `Completed`, so a client
-    /// that lost the original response can retry without reading state first.
-    pub fn retry_finalize_campaign(
-        env: Env,
-        caller: Address,
-        campaign_id: u64,
+        session_id: u64,
+        bidder: Address,
+        pre_image: BytesN<32>,
     ) -> Result<(), Error> {
-        campaign::retry_finalize_campaign(&env, &caller, campaign_id)
+        commit_reveal::reveal_pre_image(&env, session_id, &bidder, pre_image)
     }
 
+    /// Finalise a commit-reveal session, deriving the tie-break seed from the
+    /// hash-chain of all valid reveals in submission order. Callable by
+    /// anyone once the reveal window has closed. Emits `cr_fin1`.
+    pub fn finalise_commit_reveal_session(env: Env, session_id: u64) -> Result<BytesN<32>, Error> {
+        commit_reveal::finalise_session(&env, session_id)
+    }
+
+    /// Look up a commit-reveal session by id.
+    pub fn get_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Option<commit_reveal::CommitRevealSession> {
+        commit_reveal::get_session(&env, session_id)
+    }
+
+    /// Look up a bidder's commitment record within a session.
+    pub fn get_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+    ) -> Option<commit_reveal::CommitRecord> {
+        commit_reveal::get_commitment(&env, session_id, &bidder)
+    }
 }
 
 // Temporarily disabled - requires create_token implementation

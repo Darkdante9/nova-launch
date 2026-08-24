@@ -1,5 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
+use crate::commit_reveal::{CommitRecord, CommitRevealSession};
 use crate::types::{
     BridgeLock, BuybackCampaign, DataKey, Error, FactoryState, Reservation,
     RevealBatchContinuation, SettleBatchContinuation, StreamCursor, TokenInfo,
@@ -2266,49 +2267,76 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
         .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
 }
 
-// ── Oracle price feed storage ─────────────────────────────────────────────
+// ── Commit-reveal session storage (#1626) ────────────────────────────────────
 
-/// Get the global oracle configuration, if it has been set via `configure_oracle`.
-pub fn get_oracle_config(env: &Env) -> Option<crate::types::OracleConfig> {
-    env.storage().instance().get(&DataKey::OracleConfig)
-}
-
-/// Set the global oracle configuration.
-pub fn set_oracle_config(env: &Env, config: &crate::types::OracleConfig) {
-    env.storage().instance().set(&DataKey::OracleConfig, config);
-}
-
-/// Returns `true` if `source` is authorized to submit oracle prices.
-pub fn is_oracle_source_authorized(env: &Env, source: &Address) -> bool {
+/// Assign and return the next commit-reveal session id, advancing the counter.
+pub fn get_next_commit_reveal_session_id(env: &Env) -> Result<u64, Error> {
+    let count: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CommitRevealSessionCount)
+        .unwrap_or(0_u64);
+    let next = count.checked_add(1).ok_or(Error::ArithmeticError)?;
     env.storage()
         .instance()
-        .get(&DataKey::OracleAuthorizedSource(source.clone()))
-        .unwrap_or(false)
+        .set(&DataKey::CommitRevealSessionCount, &next);
+    Ok(next)
 }
 
-/// Authorize or deauthorize `source` as an oracle price submitter.
-pub fn set_oracle_source_authorized(env: &Env, source: &Address, authorized: bool) {
-    env.storage().instance().set(
-        &DataKey::OracleAuthorizedSource(source.clone()),
-        &authorized,
+/// Get a commit-reveal session by id.
+pub fn get_commit_reveal_session(env: &Env, session_id: u64) -> Option<CommitRevealSession> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CommitRevealSession(session_id))
+}
+
+/// Persist a commit-reveal session, keyed by its own id.
+pub fn set_commit_reveal_session(env: &Env, session: &CommitRevealSession) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CommitRevealSession(session.id), session);
+}
+
+/// Get a bidder's commitment record by (session, commitment index).
+pub fn get_commit_record(env: &Env, session_id: u64, index: u32) -> Option<CommitRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CommitRecord(session_id, index))
+}
+
+/// Persist a bidder's commitment record at (session, commitment index).
+pub fn set_commit_record(env: &Env, session_id: u64, index: u32, record: &CommitRecord) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CommitRecord(session_id, index), record);
+}
+
+/// Whether `bidder` already has a commitment recorded in `session_id`.
+pub fn has_commit_reveal_bidder(env: &Env, session_id: u64, bidder: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::CommitRevealBidderIndex(
+            session_id,
+            bidder.clone(),
+        ))
+}
+
+/// Get the commitment index assigned to `bidder` within `session_id`.
+pub fn get_commit_reveal_bidder_index(env: &Env, session_id: u64, bidder: &Address) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CommitRevealBidderIndex(
+            session_id,
+            bidder.clone(),
+        ))
+}
+
+/// Record the commitment index assigned to `bidder` within `session_id`.
+pub fn set_commit_reveal_bidder_index(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.storage().persistent().set(
+        &DataKey::CommitRevealBidderIndex(session_id, bidder.clone()),
+        &index,
     );
-}
-
-/// Get the latest submitted price for `asset`, if any.
-pub fn get_oracle_price(env: &Env, asset: &Address) -> Option<crate::types::PriceData> {
-    let key = DataKey::OraclePrice(asset.clone());
-    let val = env.storage().persistent().get(&key);
-    if val.is_some() {
-        bump_persistent(env, &key);
-    }
-    val
-}
-
-/// Store the latest submitted price for `asset`.
-pub fn set_oracle_price(env: &Env, asset: &Address, price: &crate::types::PriceData) {
-    let key = DataKey::OraclePrice(asset.clone());
-    env.storage().persistent().set(&key, price);
-    bump_persistent(env, &key);
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
