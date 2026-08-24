@@ -275,6 +275,27 @@ enum StreamStatus {
   CANCELLED
 }
 
+/// Off-chain metadata cache for the payment-streaming/vesting feature
+/// (Issue #1765) — a distinct feature from the `Stream` model above, which
+/// backs the pre-existing Vaults ingestion pipeline. `streamId` here refers
+/// to the token-factory contract's `streaming` module stream id, not a
+/// Vaults stream. Deliberately named `PaymentStream*` (not `Stream*`) to
+/// avoid any naming collision with the Vaults models/services.
+model PaymentStreamMetadata {
+  id          String   @id @default(uuid())
+  streamId    BigInt   @unique
+  creator     String
+  recipient   String
+  title       String?
+  description String?
+  tags        String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([creator])
+  @@index([recipient])
+}
+
 model Proposal {
   id           String         @id @default(uuid())
   proposalId   Int            @unique

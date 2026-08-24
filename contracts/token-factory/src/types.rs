@@ -352,6 +352,11 @@ pub struct BuybackCampaign {
     pub budget: i128,
     pub spent: i128,
     pub tokens_bought: i128,
+    /// Tokens actually burned so far. Tracked separately from `tokens_bought`
+    /// so a burn that under-delivers is visible rather than silently absorbed.
+    pub tokens_burned: i128,
+    /// Hard cap on the quote amount a single `execute_buyback_step` may spend.
+    pub max_spend_per_step: i128,
     pub execution_count: u32,
     pub start_time: u64,
     pub end_time: u64,
@@ -689,12 +694,10 @@ pub struct PriceData {
 ///
 /// # Fields
 /// * `max_age_seconds` - Maximum acceptable age of a price before it is considered stale
-/// * `min_sources` - Minimum number of authorized sources that must have submitted a price
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
     pub max_age_seconds: u64,
-    pub min_sources: u32,
 }
 
 /// Batch fee update structure for Phase 2 optimization
@@ -789,6 +792,35 @@ pub struct AmmPool {
     pub reserve_a: i128,
     pub reserve_b: i128,
     pub total_lp: i128,
+}
+
+/// A record of tokens escrowed by `lock_tokens` for a cross-chain bridge
+/// transfer, keyed by the contract-assigned `nonce`.
+///
+/// The nonce must be supplied verbatim to `release_tokens` (on the
+/// destination-side deployment of this contract) to authorize release; the
+/// lock record itself is not consulted by `release_tokens` — verifying that
+/// a matching lock actually occurred on the source chain is an off-chain /
+/// admin responsibility (see `bridge.rs` module docs).
+///
+/// # Fields
+/// * `nonce` - Monotonically-assigned, single-use identifier for this lock
+/// * `sender` - Address that authorized and funded the lock
+/// * `token` - Token contract address that was locked
+/// * `amount` - Amount of `token` escrowed (smallest unit)
+/// * `destination_chain` - Free-form identifier of the target chain (e.g. "ethereum")
+/// * `destination_address` - Raw destination-chain address bytes (format is chain-specific)
+/// * `locked_at` - Ledger timestamp when the lock was created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeLock {
+    pub nonce: u64,
+    pub sender: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub destination_chain: String,
+    pub destination_address: Bytes,
+    pub locked_at: u64,
 }
 
 /// Storage keys for contract data
@@ -1381,12 +1413,18 @@ impl From<soroban_sdk::Error> for Error {
     }
 }
 
-// Buyback error code mapping (reusing existing errors):
-// - CampaignNotFound -> TokenNotFound (4)
-// - CampaignInactive -> ContractPaused (14)  
-// - BudgetExhausted -> InsufficientFee (1)
-// - SlippageExceeded -> InvalidAmount (10)
-// - InvalidBuybackParams -> InvalidParameters (3)
+// Buyback-and-burn campaign error codes (issue #1764).
+// These are dedicated discriminants -- earlier revisions reused unrelated
+// codes (e.g. ContractPaused for an inactive campaign), which made off-chain
+// error decoding ambiguous.
+// - CampaignNotFound      -> 51
+// - CampaignInactive      -> 133
+// - ExceedsStepLimit      -> 134
+// - SlippageExceeded      -> 135
+// - ReconciliationFailed  -> 136
+// - InvariantViolation    -> 137
+// - InsufficientBudget    -> 53
+// - InvalidStateTransition-> 40
 
 /// Type of pending change
 ///
@@ -1557,7 +1595,7 @@ pub struct PaginatedTokens {
 /// * `created_ledger` - Ledger sequence number when the stream was created
 /// * `stream_id` - Unique stream identifier (tiebreaker for same-ledger creates)
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamCursor {
     pub created_ledger: u32,
     pub stream_id: u64,
@@ -1574,13 +1612,29 @@ impl StreamCursor {
 ///
 /// # Fields
 /// * `streams` - Page of streams ordered by `(created_ledger, stream_id)` ascending
-/// * `next_cursor` - Cursor to pass to the next call (`None` when this is the last page)
+/// * `next_cursor` - Cursor to pass to the next call; only meaningful when `has_more` is `true`
 /// * `has_more` - Whether additional streams exist beyond this page
+///
+/// `next_cursor` is a plain `StreamCursor` rather than `Option<StreamCursor>`
+/// because `Option<T>` of a custom `#[contracttype]` is not marshalled
+/// correctly by this soroban-sdk version's generated contract client when
+/// nested inside another `#[contracttype]` struct — check `has_more` rather
+/// than relying on an absent cursor.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaginatedStreamsResponse {
     pub streams: soroban_sdk::Vec<StreamInfo>,
-    pub next_cursor: Option<StreamCursor>,
+    /// Cursor for the next page: empty when this is the last page, otherwise a
+    /// single element.
+    ///
+    /// Modelled as a 0-or-1 element `Vec` rather than the more natural
+    /// `Option<StreamCursor>` because soroban-sdk 27's `#[contracttype]`
+    /// derives only a fallible `TryFrom<StreamCursor> for ScVal`, while the
+    /// XDR crate's `ScVal: From<&Option<T>>` requires `T: Into<ScVal>`. An
+    /// `Option` of a user-defined contract type therefore fails to compile in
+    /// any build where `soroban-sdk/testutils` is unified in -- i.e. every
+    /// test build of this crate. `has_more` remains the flag to branch on.
+    pub next_cursor: soroban_sdk::Vec<StreamCursor>,
     pub has_more: bool,
 }
 

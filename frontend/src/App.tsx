@@ -14,6 +14,7 @@ const LandingPage = lazy(() => import("./pages/LandingPage"));
 const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
+const StreamDashboard = lazy(() => import("./components/Streams/StreamDashboard"));
 
 // Loading fallback
 function PageLoader() {
@@ -94,6 +95,20 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
           currentPath={pathname}
         >
           <RecurringPayments />
+        </DashboardLayout>
+      );
+    }
+
+    if (pathname === "/streams") {
+      return (
+        <DashboardLayout
+          wallet={wallet}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          isConnecting={isConnecting}
+          currentPath={pathname}
+        >
+          <StreamDashboard />
         </DashboardLayout>
       );
     }

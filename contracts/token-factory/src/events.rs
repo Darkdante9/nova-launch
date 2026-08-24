@@ -916,6 +916,53 @@ pub fn emit_stream_metadata_updated(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Recurring Stream Events (Issue #1765)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Emit recurring stream created event.
+///
+/// Topics: ("rstrm_cr", recurring_stream_id). Payload: (creator, recipient,
+/// amount_per_period, first_child_stream_id).
+pub fn emit_recurring_stream_created(
+    env: &Env,
+    recurring_stream_id: u64,
+    creator: &Address,
+    recipient: &Address,
+    amount_per_period: i128,
+    first_child_stream_id: u64,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_cr"), recurring_stream_id),
+        (creator, recipient, amount_per_period, first_child_stream_id),
+    );
+}
+
+/// Emit recurring stream period-triggered event (a new child stream was created).
+///
+/// Topics: ("rstrm_trg", recurring_stream_id). Payload: (child_stream_id, period_index).
+pub fn emit_recurring_period_triggered(
+    env: &Env,
+    recurring_stream_id: u64,
+    child_stream_id: u64,
+    period_index: u32,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_trg"), recurring_stream_id),
+        (child_stream_id, period_index),
+    );
+}
+
+/// Emit recurring stream cancelled event.
+///
+/// Topics: ("rstrm_cxl", recurring_stream_id). Payload: (canceller,).
+pub fn emit_recurring_stream_cancelled(env: &Env, recurring_stream_id: u64, canceller: &Address) {
+    env.events().publish(
+        (symbol_short!("rstrm_cxl"), recurring_stream_id),
+        (canceller.clone(),),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Proposal/Governance Events
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1337,6 +1384,42 @@ pub fn emit_campaign_cancelled(
     env.events().publish(
         (symbol_short!("cmp_cnl"), campaign_id),
         (cancelled_by, budget_remaining),
+    );
+}
+
+/// Emit buyback step settled event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: bb_stp_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "bb_stp_v1"
+/// - campaign_id: u64 - The campaign identifier
+///
+/// **Payload** (non-indexed):
+/// - executor: Address   - Address that executed the step
+/// - spent: i128         - Budget spent on this step, in stroops
+/// - bought: i128        - Target tokens acquired by the swap
+/// - burned: i128        - Target tokens actually burned
+/// - step_number: u32    - 1-based index of this step within the campaign
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+///
+/// Emitted once per successful `execute_buyback_step` call, after the campaign
+/// record has been committed. `bought` and `burned` are reported separately so
+/// off-chain consumers can detect a burn shortfall without re-deriving it.
+pub fn emit_buyback_step_settled(
+    env: &Env,
+    campaign_id: u64,
+    executor: &Address,
+    spent: i128,
+    bought: i128,
+    burned: i128,
+    step_number: u32,
+) {
+    env.events().publish(
+        (symbol_short!("bb_stp_v1"), campaign_id),
+        (executor, spent, bought, burned, step_number),
     );
 }
 /// Emit asset fractionalized event
@@ -1893,4 +1976,115 @@ pub fn emit_settlement_aborted(env: &Env, reservation_id: u64, proposal_id: u64,
 pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_id: u64) {
     env.events()
         .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
+}
+
+// ── Commit-reveal auction tie-breaking events (#1626) ────────────────────────
+
+/// Emitted when a commit-reveal session is created via
+/// `create_commit_reveal_session`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_open1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_open1"
+/// - session_id: u64 - The newly created session id
+///
+/// **Payload** (non-indexed):
+/// - creator: Address - The admin that created the session
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - commit_start: u64 - Timestamp the commit window opens
+/// - commit_end: u64 - Timestamp the commit window closes / reveal window opens
+/// - reveal_end: u64 - Timestamp the reveal window closes
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_session_created(
+    env: &Env,
+    session_id: u64,
+    creator: &Address,
+    auction_id: u64,
+    commit_start: u64,
+    commit_end: u64,
+    reveal_end: u64,
+) {
+    env.events().publish(
+        (symbol_short!("cr_open1"), session_id),
+        (
+            creator.clone(),
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
+        ),
+    );
+}
+
+/// Emitted when a bidder submits a commitment via `submit_commitment`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_cmit1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_cmit1"
+/// - session_id: u64 - The session the commitment was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that committed
+/// - index: u32 - The bidder's commitment index (used for hash-chain ordering)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commitment_submitted(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_cmit1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a bidder successfully reveals a pre-image via `reveal_pre_image`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_rvl1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_rvl1"
+/// - session_id: u64 - The session the reveal was submitted to
+///
+/// **Payload** (non-indexed):
+/// - bidder: Address - The address that revealed
+/// - index: u32 - The bidder's commitment index
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_pre_image_revealed(env: &Env, session_id: u64, bidder: &Address, index: u32) {
+    env.events().publish(
+        (symbol_short!("cr_rvl1"), session_id),
+        (bidder.clone(), index),
+    );
+}
+
+/// Emitted when a session is finalised via `finalise_commit_reveal_session`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: cr_fin1
+///
+/// **Topics** (indexed):
+/// - Event name: "cr_fin1"
+/// - session_id: u64 - The finalised session id
+///
+/// **Payload** (non-indexed):
+/// - auction_id: u64 - Opaque id of the auction/mechanism this session ties into
+/// - seed: BytesN<32> - The derived tie-break seed
+/// - reveal_count: u32 - Number of valid (non-forfeited) reveals folded into the seed
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_commit_reveal_finalised(
+    env: &Env,
+    session_id: u64,
+    auction_id: u64,
+    seed: &BytesN<32>,
+    reveal_count: u32,
+) {
+    env.events().publish(
+        (symbol_short!("cr_fin1"), session_id),
+        (auction_id, seed.clone(), reveal_count),
+    );
 }
