@@ -9,20 +9,31 @@ extern crate std;
 
 mod compliance_reporting;
 mod freeze_functions;
+mod fractionalization;
+#[cfg(test)]
+mod fractionalization_test;
 mod governance;
 mod game_history;
 mod ipfs_pinning;
 
 mod batch_operations;
 mod batch_scheduler;
+mod bridge;
+#[cfg(test)]
+mod bridge_test;
 mod burn;
+mod commit_reveal;
+#[cfg(test)]
+mod commit_reveal_test;
 mod settlement;
 mod clawback;
 mod invariants;
 mod differential_engine;
 mod event_versions;
 mod events;
+mod liquidity_mining;
 mod milestone_verification;
+mod oracle;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_milestone_verification_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -44,6 +55,8 @@ mod test_helpers;
 #[cfg(test)]
 mod freeze_functions_test;
 #[cfg(test)]
+mod liquidity_mining_test;
+#[cfg(test)]
 mod game_history_test;
 #[cfg(test)]
 mod proposal_queue_test;
@@ -57,6 +70,7 @@ mod treasury;
 mod types;
 mod vault;
 mod validation;
+mod vesting;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -3205,6 +3219,266 @@ impl TokenFactory {
         events::emit_vault_cancelled(&env, vault_id, &actor, remaining_amount);
 
         Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Payment Streaming & Vesting (Issue #1765)
+    //
+    // A distinct feature from Vaults above — see `streaming.rs` module docs.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Create a single vesting-aware payment stream.
+    ///
+    /// The stream vests linearly from `start_time` to `end_time`, gated by an
+    /// optional `cliff_time` (nothing is claimable before the cliff). Any
+    /// `milestones` unlock additional bonus amounts, on top of the linear
+    /// vesting, once verified via `verify_stream_milestone`.
+    pub fn create_stream(
+        env: Env,
+        creator: Address,
+        recipient: Address,
+        token_index: u32,
+        total_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_time: u64,
+        metadata: Option<String>,
+        milestones: Vec<Milestone>,
+    ) -> Result<u64, Error> {
+        let params = StreamParams {
+            recipient,
+            token_index,
+            total_amount,
+            start_time,
+            end_time,
+            cliff_time,
+        };
+        let result = streaming::create_stream(&env, &creator, &params, metadata, milestones);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, u64::MAX, *e, total_amount, "create_stream_failed");
+        }
+        result
+    }
+
+    /// Batch-create up to 100 payment streams in a single atomic call.
+    pub fn batch_create_streams(
+        env: Env,
+        creator: Address,
+        streams: Vec<StreamParams>,
+    ) -> Result<Vec<u64>, Error> {
+        let result = streaming::batch_create_streams(&env, &creator, streams);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, u64::MAX, *e, 0, "batch_create_streams_failed");
+        }
+        result
+    }
+
+    /// Claim the currently-vested (and unclaimed) balance of a stream.
+    pub fn claim_stream(env: Env, recipient: Address, stream_id: u64) -> Result<i128, Error> {
+        if storage::is_paused(&env) {
+            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            return Err(Error::ContractPaused);
+        }
+
+        if let Err(e) = storage::acquire_reentrancy_lock(&env) {
+            events::emit_operation_failed(&env, stream_id, e, 0, "reentrancy_lock_held");
+            return Err(e);
+        }
+        let result = streaming::claim_stream(&env, &recipient, stream_id);
+        storage::release_reentrancy_lock(&env);
+
+        let claimed = match result {
+            Ok(v) => v,
+            Err(e) => {
+                events::emit_operation_failed(&env, stream_id, e, 0, "claim_stream_failed");
+                return Err(e);
+            }
+        };
+
+        // State was already committed by `streaming::claim_stream`; the
+        // external token transfer happens after (CEI pattern), matching
+        // `claim_vault_inner`.
+        let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
+        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
+        token_client.transfer(&env.current_contract_address(), &recipient, &claimed);
+
+        Ok(claimed)
+    }
+
+    /// Cancel a stream, settling the vested-but-unclaimed portion to the
+    /// recipient and returning the unvested remainder to the creator.
+    pub fn cancel_stream(env: Env, actor: Address, stream_id: u64) -> Result<(), Error> {
+        if storage::is_paused(&env) {
+            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            return Err(Error::ContractPaused);
+        }
+
+        if let Err(e) = storage::acquire_reentrancy_lock(&env) {
+            events::emit_operation_failed(&env, stream_id, e, 0, "reentrancy_lock_held");
+            return Err(e);
+        }
+        let result = streaming::cancel_stream(&env, &actor, stream_id);
+        storage::release_reentrancy_lock(&env);
+
+        let (vested_unclaimed, unvested_to_creator) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                events::emit_operation_failed(&env, stream_id, e, 0, "cancel_stream_failed");
+                return Err(e);
+            }
+        };
+
+        let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
+        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
+        let contract_address = env.current_contract_address();
+        if vested_unclaimed > 0 {
+            token_client.transfer(&contract_address, &stream.recipient, &vested_unclaimed);
+        }
+        if unvested_to_creator > 0 {
+            token_client.transfer(&contract_address, &stream.creator, &unvested_to_creator);
+        }
+
+        Ok(())
+    }
+
+    /// Update a stream's metadata. Creator-only, and only before the
+    /// recipient's first claim (metadata is immutable after that).
+    pub fn update_stream_metadata(
+        env: Env,
+        actor: Address,
+        stream_id: u64,
+        metadata: Option<String>,
+    ) -> Result<(), Error> {
+        let result = streaming::update_stream_metadata(&env, &actor, stream_id, metadata);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, stream_id, *e, 0, "update_stream_metadata_failed");
+        }
+        result
+    }
+
+    /// Verify a stream milestone (only its designated oracle address may
+    /// call this), unlocking its bonus amount for claiming.
+    pub fn verify_stream_milestone(
+        env: Env,
+        oracle: Address,
+        stream_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let result = streaming::verify_stream_milestone(&env, &oracle, stream_id, milestone_index);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, stream_id, *e, 0, "verify_stream_milestone_failed");
+        }
+        result
+    }
+
+    /// Get a stream by id.
+    pub fn get_stream(env: Env, stream_id: u64) -> Result<StreamInfo, Error> {
+        storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)
+    }
+
+    /// List streams created by `owner`, keyset-paginated by `(created_ledger, stream_id)`.
+    ///
+    /// Pass `cursor.stream_id == u64::MAX` to request the first page — a
+    /// plain `StreamCursor` (rather than `Option<StreamCursor>`) is used
+    /// here because `Option<T>` of a custom `#[contracttype]` is not
+    /// supported in *parameter* position by this soroban-sdk version's
+    /// generated client (only in return position), matching the sentinel
+    /// convention `pagination::get_tokens_by_creator` already uses for its
+    /// own cursor parameter.
+    pub fn list_streams_by_creator(
+        env: Env,
+        owner: Address,
+        cursor: StreamCursor,
+        limit: u32,
+    ) -> PaginatedStreamsResponse {
+        let cursor = if cursor.stream_id == u64::MAX {
+            None
+        } else {
+            Some(cursor)
+        };
+        pagination::list_streams_paginated(&env, &owner, cursor, limit)
+    }
+
+    /// Create a recurring stream, which immediately creates its first
+    /// (period 0) child stream.
+    pub fn create_recurring_stream(
+        env: Env,
+        creator: Address,
+        recipient: Address,
+        token_index: u32,
+        amount_per_period: i128,
+        period_ledgers: u64,
+        total_periods: u32,
+        auto_renew: bool,
+    ) -> Result<u64, Error> {
+        let params = RecurringStreamParams {
+            recipient,
+            amount_per_period,
+            period_ledgers,
+            total_periods,
+            auto_renew,
+        };
+        let result =
+            recurring_stream::create_recurring_stream(&env, &creator, &params, token_index);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                u64::MAX,
+                *e,
+                amount_per_period,
+                "create_recurring_stream_failed",
+            );
+        }
+        result
+    }
+
+    /// Create the next period's child stream for a recurring stream, if the
+    /// period has elapsed. Callable by anyone once due — the creator's
+    /// authorization was already captured at creation time.
+    pub fn trigger_recurring_period(
+        env: Env,
+        caller: Address,
+        recurring_stream_id: u64,
+    ) -> Result<u64, Error> {
+        let result =
+            recurring_stream::trigger_recurring_period(&env, &caller, recurring_stream_id);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                recurring_stream_id,
+                *e,
+                0,
+                "trigger_recurring_period_failed",
+            );
+        }
+        result
+    }
+
+    /// Cancel a recurring stream (creator or admin only). Already-created
+    /// child streams are unaffected — this only stops future periods.
+    pub fn cancel_recurring_stream(
+        env: Env,
+        actor: Address,
+        recurring_stream_id: u64,
+    ) -> Result<(), Error> {
+        let result = recurring_stream::cancel_recurring_stream(&env, &actor, recurring_stream_id);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                recurring_stream_id,
+                *e,
+                0,
+                "cancel_recurring_stream_failed",
+            );
+        }
+        result
+    }
+
+    /// Get a recurring stream by id.
+    pub fn get_recurring_stream(env: Env, recurring_stream_id: u64) -> Result<RecurringStream, Error> {
+        storage::get_recurring_stream(&env, recurring_stream_id).ok_or(Error::RecurringStreamNotFound)
     }
 
     /// Configure the per-epoch vault withdrawal circuit breaker limit (admin only, #1362).
